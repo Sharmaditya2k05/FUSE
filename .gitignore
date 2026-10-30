@@ -1,0 +1,14 @@
+*.o
+*.a
+disk.img
+filesystem.log
+schedfs
+mkfs.schedfs
+schedfs-bench
+tests/test_scheduler
+tests/test_queue
+tests/test_core
+tests/core.img
+tmp/
+scripts/__pycache__/
+build-win/
