@@ -1,3 +1,8 @@
+/*
+ * filesystem.h
+ *
+ * Public API of the SchedFS inode/directory layer (mount, path ops, file I/O).
+ */
 #ifndef SCHEDFS_FILESYSTEM_H
 #define SCHEDFS_FILESYSTEM_H
 #include <pthread.h>
@@ -7,17 +12,21 @@
 #include <sys/statvfs.h>
 #include "layout.h"
 #include "virtual_disk.h"
+
 typedef struct {
     virtual_disk_t disk;
     sfs_superblock_t sb;
     uint8_t *bitmap;
     pthread_mutex_t bitmap_lock, super_lock, inode_alloc_lock;
+    /* 32 inodes share one table block; serializes inode_write's read-modify-write. */
+    pthread_mutex_t inode_table_lock;
     pthread_rwlock_t inode_locks[SFS_DEFAULT_INODES + 1u];
     pthread_mutex_t dir_locks[SFS_DEFAULT_INODES + 1u];
     bool verbose;
 } sfs_t;
-int sfs_mount_image(sfs_t *fs, const char *path, sched_policy_t policy,
-                    double alpha, double beta, bool verbose);
+
+int sfs_mount_image(sfs_t *fs, const char *path, sched_policy_t policy, double alpha, double beta,
+                    bool verbose);
 void sfs_unmount_image(sfs_t *fs);
 int sfs_getattr(sfs_t *fs, const char *path, struct stat *st);
 int sfs_create(sfs_t *fs, const char *path, mode_t mode, uint32_t *ino);

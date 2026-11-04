@@ -1,17 +1,22 @@
+/*
+ * layout.h
+ *
+ * On-disk format: superblock, 128-byte inode and 64-byte directory entry layouts.
+ */
 #ifndef SCHEDFS_LAYOUT_H
 #define SCHEDFS_LAYOUT_H
 
 #include <stdint.h>
 
-#define SFS_MAGIC 0x53465331u
-#define SFS_VERSION 1u
-#define SFS_BLOCK_SIZE 4096u
-#define SFS_DEFAULT_INODES 256u
-#define SFS_DIRECT_BLOCKS 12u
+#define SFS_MAGIC           0x53465331u
+#define SFS_VERSION         1u
+#define SFS_BLOCK_SIZE      4096u
+#define SFS_DEFAULT_INODES  256u
+#define SFS_DIRECT_BLOCKS   12u
 #define SFS_INDIRECT_BLOCKS (SFS_BLOCK_SIZE / sizeof(uint32_t))
-#define SFS_NAME_MAX 59u
-#define SFS_ROOT_INO 1u
-#define SFS_MIN_BLOCKS 64u
+#define SFS_NAME_MAX        59u
+#define SFS_ROOT_INO        1u
+#define SFS_MIN_BLOCKS      64u
 
 typedef struct __attribute__((packed)) {
     uint32_t magic, version, block_size, total_blocks;

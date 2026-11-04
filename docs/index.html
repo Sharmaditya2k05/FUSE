@@ -1,0 +1,695 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SchedFS Scheduler Lab</title>
+<meta name="description" content="Interactive walkthrough of SchedFS: a FUSE file system whose block I/O is ordered by FCFS, SSTF, SCAN or an adaptive disk scheduler.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #f7f6f2;
+  --surface: #ffffff;
+  --surface-2: #f0eee8;
+  --ink: #1c1b19;
+  --ink-2: #55524b;
+  --ink-3: #8a867c;
+  --line: #e2dfd6;
+  --accent: #2a6fdb;
+  --fcfs: #8c8c8c;
+  --sstf: #2a6fdb;
+  --scan: #e08a1e;
+  --adaptive: #1a9e77;
+  --shadow: 0 1px 2px rgba(0,0,0,.04), 0 4px 16px rgba(0,0,0,.04);
+  --sans: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #131416; --surface: #1b1d20; --surface-2: #24272b; --ink: #ecebe7; --ink-2: #b4b1a9;
+    --ink-3: #7f7c75; --line: #2f3236; --accent: #5b93ee; --fcfs: #a3a3a3; --sstf: #5b93ee;
+    --scan: #f0a03a; --adaptive: #34c495; --shadow: none;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #131416; --surface: #1b1d20; --surface-2: #24272b; --ink: #ecebe7; --ink-2: #b4b1a9;
+  --ink-3: #7f7c75; --line: #2f3236; --accent: #5b93ee; --fcfs: #a3a3a3; --sstf: #5b93ee;
+  --scan: #f0a03a; --adaptive: #34c495; --shadow: none;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.55 var(--sans); }
+a { color: var(--accent); }
+code, .mono { font-family: var(--mono); font-size: .88em; }
+.wrap { max-width: 1120px; margin: 0 auto; padding: 0 20px; }
+header.top { display: flex; align-items: center; justify-content: space-between; padding: 18px 0; }
+.brand { font-weight: 800; letter-spacing: -.02em; font-size: 18px; display: flex; gap: 10px; align-items: center; }
+.brand .logo { width: 26px; height: 26px; border-radius: 7px; background: var(--ink); color: var(--bg); display: grid; place-items: center; font: 700 12px var(--mono); }
+.top nav { display: flex; gap: 18px; font-size: 14px; }
+.top nav a { color: var(--ink-2); text-decoration: none; }
+.top nav a:hover { color: var(--ink); }
+.theme-btn { border: 1px solid var(--line); background: var(--surface); color: var(--ink-2); border-radius: 8px; padding: 4px 10px; font: inherit; font-size: 13px; cursor: pointer; }
+
+.hero { padding-top: 56px; padding-bottom: 40px; }
+.eyebrow { font: 600 12px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--ink-3); margin: 0 0 12px; }
+.hero h1 { font-size: clamp(34px, 6vw, 60px); line-height: 1.04; letter-spacing: -.035em; margin: 0 0 18px; font-weight: 800; max-width: 16ch; }
+.hero h1 em { font-style: normal; color: var(--accent); }
+.hero p.lede { font-size: clamp(17px, 2vw, 20px); color: var(--ink-2); max-width: 62ch; margin: 0 0 30px; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+.stat { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 16px 18px; box-shadow: var(--shadow); }
+.stat b { display: block; font-size: 30px; letter-spacing: -.03em; line-height: 1.1; }
+.stat span { color: var(--ink-2); font-size: 14px; }
+
+section { padding: 44px 0; border-top: 1px solid var(--line); }
+section h2 { font-size: clamp(24px, 3.4vw, 34px); letter-spacing: -.025em; margin: 0 0 10px; line-height: 1.15; }
+section > .wrap > p.sub { color: var(--ink-2); max-width: 70ch; margin: 0 0 26px; }
+
+/* Request path */
+.pipe { display: grid; grid-template-columns: repeat(7, 1fr); gap: 8px; align-items: stretch; }
+.stage { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 12px; position: relative; box-shadow: var(--shadow); min-height: 108px; }
+.stage h4 { margin: 0 0 4px; font-size: 14px; letter-spacing: -.01em; }
+.stage p { margin: 0; font-size: 12.5px; color: var(--ink-2); line-height: 1.4; }
+.stage code { display: block; margin-top: 8px; color: var(--ink-3); font-size: 11px; word-break: break-all; }
+.stage.hot { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
+.stage.hot h4 { color: var(--accent); }
+.stage:not(:last-child)::after { content: "→"; position: absolute; right: -10px; top: 50%; transform: translate(50%, -50%); color: var(--ink-3); font-size: 14px; z-index: 1; }
+.note { margin-top: 16px; font-size: 14px; color: var(--ink-2); background: var(--surface-2); border-radius: 10px; padding: 12px 14px; }
+
+/* Layout bar */
+.layout-bar { display: flex; height: 64px; border-radius: 12px; overflow: hidden; border: 1px solid var(--line); font-size: 12px; }
+.layout-bar div { display: flex; flex-direction: column; justify-content: center; padding: 0 10px; border-right: 1px solid var(--line); min-width: 0; }
+.layout-bar div:last-child { border-right: 0; }
+.layout-bar b { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.layout-bar span { color: var(--ink-2); font-family: var(--mono); font-size: 11px; white-space: nowrap; }
+.inode-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 18px; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 18px; box-shadow: var(--shadow); }
+.card h3 { margin: 0 0 8px; font-size: 16px; }
+.card p { margin: 0; color: var(--ink-2); font-size: 14px; }
+.ptrs { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 12px; }
+.ptrs i { font-style: normal; font: 600 10px var(--mono); width: 26px; height: 22px; display: grid; place-items: center; border-radius: 5px; background: var(--surface-2); color: var(--ink-2); }
+.ptrs i.ind { width: auto; padding: 0 8px; background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
+
+/* Lab */
+.controls { display: grid; grid-template-columns: 2fr 1fr 1fr 1fr; gap: 12px; margin-bottom: 14px; }
+.field label { display: block; font: 600 11px var(--mono); text-transform: uppercase; letter-spacing: .06em; color: var(--ink-3); margin-bottom: 6px; }
+select, input[type=text], input[type=number] { width: 100%; font: inherit; font-size: 14px; padding: 8px 10px; border-radius: 9px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); }
+input[type=range] { width: 100%; accent-color: var(--adaptive); }
+.range-row { display: flex; gap: 8px; align-items: center; }
+.range-row output { font: 600 13px var(--mono); min-width: 32px; text-align: right; }
+.trace-row { display: flex; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
+.trace-row input { flex: 1 1 260px; font-family: var(--mono); }
+.btn { font: 600 14px var(--sans); padding: 8px 14px; border-radius: 9px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); cursor: pointer; }
+.btn.primary { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+.btn:disabled { opacity: .45; cursor: default; }
+.transport { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 16px; }
+.transport .progress { font: 600 13px var(--mono); color: var(--ink-2); margin-left: auto; }
+.speed { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--ink-2); }
+.speed input { width: 90px; accent-color: var(--ink); }
+.panels { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 14px; box-shadow: var(--shadow); display: flex; flex-direction: column; min-width: 0; }
+.panel-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.panel-head h3 { margin: 0; font-size: 15px; display: flex; align-items: center; gap: 7px; }
+.dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+.seek { font: 700 22px var(--mono); letter-spacing: -.02em; }
+.seek small { font: 500 11px var(--sans); color: var(--ink-3); margin-left: 3px; }
+.panel svg { width: 100%; height: auto; margin: 8px 0 6px; display: block; }
+.order { display: flex; flex-wrap: wrap; gap: 3px; min-height: 48px; align-content: flex-start; }
+.order span { font: 600 11px var(--mono); padding: 2px 6px; border-radius: 5px; background: var(--surface-2); color: var(--ink-3); }
+.order span.done { color: #fff; }
+.order span.edge { background: transparent; border: 1px dashed var(--line); }
+.panel .meta { font-size: 12px; color: var(--ink-3); margin-top: 8px; }
+.panel.best { outline: 2px solid currentColor; outline-offset: -1px; }
+.legend-note { font-size: 13px; color: var(--ink-3); margin-top: 12px; }
+
+/* Results */
+.tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 14px; }
+.tab { font: 600 13px var(--sans); padding: 7px 12px; border-radius: 999px; border: 1px solid var(--line); background: var(--surface); color: var(--ink-2); cursor: pointer; }
+.tab[aria-selected="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+.chart-card { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 18px; box-shadow: var(--shadow); }
+.chart-card svg { width: 100%; height: auto; display: block; }
+.chart-legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 13px; color: var(--ink-2); margin-bottom: 6px; }
+.chart-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.findings { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 16px; }
+.finding b { display: block; font-size: 22px; letter-spacing: -.02em; margin-bottom: 4px; }
+.caveat { font-size: 13px; color: var(--ink-3); margin-top: 14px; max-width: 80ch; }
+
+/* Policies table */
+table.pol { width: 100%; border-collapse: collapse; font-size: 14px; background: var(--surface); border-radius: 14px; overflow: hidden; box-shadow: var(--shadow); border: 1px solid var(--line); }
+table.pol th, table.pol td { text-align: left; padding: 12px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+table.pol th { font: 600 11px var(--mono); text-transform: uppercase; letter-spacing: .06em; color: var(--ink-3); background: var(--surface-2); }
+table.pol tr:last-child td { border-bottom: 0; }
+.formula { font-family: var(--mono); font-size: 13px; background: var(--surface-2); padding: 10px 12px; border-radius: 9px; display: inline-block; margin-top: 12px; }
+
+pre.term { background: #17181a; color: #e6e4de; border-radius: 12px; padding: 16px 18px; overflow-x: auto; font: 13px/1.6 var(--mono); margin: 0; }
+pre.term .c { color: #8a877f; }
+footer { padding: 30px 0 50px; color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--line); }
+
+@media (max-width: 960px) {
+  .pipe { grid-template-columns: repeat(2, 1fr); }
+  .stage::after { display: none; }
+  .panels { grid-template-columns: repeat(2, 1fr); }
+  .controls { grid-template-columns: 1fr 1fr; }
+  .findings { grid-template-columns: 1fr; }
+}
+@media (max-width: 600px) {
+  .wrap { padding: 0 16px; }
+  .top nav { display: none; }
+  .panels { grid-template-columns: 1fr; }
+  .controls { grid-template-columns: 1fr; }
+  .inode-grid { grid-template-columns: 1fr; }
+  .layout-bar { height: auto; flex-direction: column; }
+  .layout-bar div { flex: none !important; border-right: 0; border-bottom: 1px solid var(--line); padding: 8px 10px; }
+  table.pol { font-size: 13px; }
+  table.pol th:nth-child(4), table.pol td:nth-child(4) { display: none; }
+}
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div class="brand"><span class="logo">sfs</span> SchedFS</div>
+    <nav>
+      <a href="#path">Request path</a>
+      <a href="#lab">Scheduler lab</a>
+      <a href="#results">Results</a>
+      <a href="#run">Run it</a>
+    </nav>
+    <button class="theme-btn" id="themeBtn" type="button">Theme</button>
+  </header>
+</div>
+
+<div class="wrap hero">
+  <p class="eyebrow">Operating Systems project · FUSE 3 · C11 · pthreads</p>
+  <h1>A file system where every block waits its <em>turn</em>.</h1>
+  <p class="lede">SchedFS is a mountable Linux file system. Each block it reads or writes becomes a request in a shared queue, and one dispatcher thread services those requests in the order chosen by a disk-scheduling policy: FCFS, SSTF, SCAN, or an age-aware Adaptive policy.</p>
+  <div class="stats">
+    <div class="stat"><b>6.8×</b><span>more head travel under FCFS than SSTF on the concurrent trace</span></div>
+    <div class="stat"><b>−74%</b><span>average wait with SCAN compared with FCFS (concurrent trace)</span></div>
+    <div class="stat"><b>4</b><span>policies, chosen at mount time with <code>--sched=</code></span></div>
+    <div class="stat"><b>3</b><span>test layers: scheduler trace, core concurrency, mounted FUSE</span></div>
+  </div>
+</div>
+
+<section id="path">
+  <div class="wrap">
+    <p class="eyebrow">01 · Architecture</p>
+    <h2>The path of one <code>cat file.txt</code></h2>
+    <p class="sub">Requests flow strictly downward. After mount, only the dispatcher thread ever calls <code>pread</code> or <code>pwrite</code> on the image, so the scheduler controls every byte of disk I/O.</p>
+    <div class="pipe">
+      <div class="stage"><h4>Application</h4><p>Ordinary tools: <code style="display:inline;margin:0">cat</code>, <code style="display:inline;margin:0">cp</code>, <code style="display:inline;margin:0">mkdir</code></p></div>
+      <div class="stage"><h4>Linux VFS</h4><p>Kernel forwards the call to <code style="display:inline;margin:0">/dev/fuse</code></p></div>
+      <div class="stage"><h4>FUSE adapter</h4><p>libfuse callbacks to the SchedFS API</p><code>src/fuse/fuse_main.c</code></div>
+      <div class="stage"><h4>Inode layer</h4><p>Path lookup, directories, block mapping</p><code>src/fs/filesystem.c</code></div>
+      <div class="stage hot"><h4>Request queue</h4><p>Bounded, mutex + <code style="display:inline;margin:0">not_empty</code> / <code style="display:inline;margin:0">not_full</code></p><code>src/sync/request_queue.c</code></div>
+      <div class="stage hot"><h4>Scheduler</h4><p>Picks the next request by policy</p><code>src/sched/scheduler.c</code></div>
+      <div class="stage"><h4>Dispatcher</h4><p>Single thread, <code style="display:inline;margin:0">pread</code>/<code style="display:inline;margin:0">pwrite</code> on disk.img</p><code>src/storage/virtual_disk.c</code></div>
+    </div>
+    <div class="note">Each caller sleeps on its <strong>own</strong> condition variable until the dispatcher marks its request complete. That is what lets many file-system threads queue up at once, giving the scheduler something to reorder.</div>
+
+    <h3 style="margin:36px 0 12px;font-size:18px">On-disk layout of a 16 MiB image</h3>
+    <div class="layout-bar" role="img" aria-label="Block 0 superblock, block 1 bitmap, blocks 2 to 9 inode table, blocks 10 to 4095 data">
+      <div style="flex:1.2;background:color-mix(in srgb,var(--scan) 22%,var(--surface))"><b>Superblock</b><span>block 0</span></div>
+      <div style="flex:1.2;background:color-mix(in srgb,var(--sstf) 18%,var(--surface))"><b>Bitmap</b><span>block 1</span></div>
+      <div style="flex:2.4;background:color-mix(in srgb,var(--adaptive) 20%,var(--surface))"><b>Inode table</b><span>2–9 · 256 × 128 B</span></div>
+      <div style="flex:9;background:var(--surface)"><b>Data blocks</b><span>10–4095 · files, directories, indirect blocks</span></div>
+    </div>
+    <div class="inode-grid">
+      <div class="card">
+        <h3>Inode, 128 bytes</h3>
+        <p>Mode, links, uid/gid, size, three timestamps, <strong>12 direct pointers</strong> and <strong>1 single-indirect pointer</strong>.</p>
+        <div class="ptrs" aria-hidden="true"><i>0</i><i>1</i><i>2</i><i>3</i><i>4</i><i>5</i><i>6</i><i>7</i><i>8</i><i>9</i><i>10</i><i>11</i><i class="ind">indirect → 1024 more</i></div>
+      </div>
+      <div class="card">
+        <h3>Maximum file size</h3>
+        <p>(12 + 1024) blocks × 4 KiB = <strong>1036 blocks, about 4.05 MiB</strong>. Reads of unallocated blocks return zeros, so sparse files and <code>truncate</code> to a larger size work.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="policies">
+  <div class="wrap">
+    <p class="eyebrow">02 · Policies</p>
+    <h2>Four ways to choose the next request</h2>
+    <p class="sub">All four share deterministic tie-breaking: earlier arrival first, then lower request ID. The same trace always produces the same service order.</p>
+    <table class="pol">
+      <thead><tr><th>Policy</th><th>Picks next</th><th>Strength</th><th>Weakness</th></tr></thead>
+      <tbody>
+        <tr><td><span class="dot" style="background:var(--fcfs)"></span> <b>FCFS</b></td><td>The oldest request</td><td>Fair, no starvation</td><td>Ignores where the head is</td></tr>
+        <tr><td><span class="dot" style="background:var(--sstf)"></span> <b>SSTF</b></td><td>The block closest to the head</td><td>Short seeks</td><td>Far requests can starve</td></tr>
+        <tr><td><span class="dot" style="background:var(--scan)"></span> <b>SCAN</b></td><td>The closest block in the current direction, reversing at the disk edge</td><td>Even sweep, bounded wait</td><td>Extra trip to the edge</td></tr>
+        <tr><td><span class="dot" style="background:var(--adaptive)"></span> <b>Adaptive</b></td><td>The lowest score that combines distance and age</td><td>Tunable between SSTF and FCFS</td><td>Experimental</td></tr>
+      </tbody>
+    </table>
+    <div class="formula">score = α · distance / total_blocks − β · wait / max_wait</div>
+    <p style="color:var(--ink-2);font-size:14px;margin:10px 0 0">With β = 0 it is exactly SSTF. Raising β lets requests that have waited longer jump the queue.</p>
+  </div>
+</section>
+
+<section id="lab">
+  <div class="wrap">
+    <p class="eyebrow">03 · Scheduler lab</p>
+    <h2>Watch the head move</h2>
+    <p class="sub">The selection logic below is a line-for-line port of <code>scheduler_pick()</code>. Pick a trace, press play, and compare how far each policy moves the disk head to serve the same requests. Time runs downward.</p>
+
+    <div class="controls">
+      <div class="field">
+        <label for="wl">Trace</label>
+        <select id="wl"></select>
+      </div>
+      <div class="field">
+        <label for="head">Start head</label>
+        <input id="head" type="number" min="0" value="53">
+      </div>
+      <div class="field">
+        <label for="alpha">Adaptive <span style="text-transform:none">α</span> (distance)</label>
+        <div class="range-row"><input id="alpha" type="range" min="0" max="1" step="0.05" value="0.7"><output id="alphaOut">0.70</output></div>
+      </div>
+      <div class="field">
+        <label for="beta">Adaptive <span style="text-transform:none">β</span> (age)</label>
+        <div class="range-row"><input id="beta" type="range" min="0" max="1" step="0.05" value="0.3"><output id="betaOut">0.30</output></div>
+      </div>
+    </div>
+    <div class="trace-row">
+      <input id="custom" type="text" aria-label="Block numbers" placeholder="Block numbers, e.g. 98 183 37 122 14 124 65 67">
+      <button class="btn" id="applyCustom" type="button">Use these blocks</button>
+    </div>
+    <div class="transport">
+      <button class="btn primary" id="play" type="button">▶ Play</button>
+      <button class="btn" id="step" type="button">Step</button>
+      <button class="btn" id="reset" type="button">Reset</button>
+      <label class="speed">Speed <input id="speed" type="range" min="0.3" max="3" step="0.1" value="1"></label>
+      <span class="progress" id="progress">0 / 0 served</span>
+    </div>
+    <div class="panels" id="panels"></div>
+    <p class="legend-note">SCAN starts moving toward block 0, as in the benchmark. A dashed chip means the head travelled to the disk edge before reversing. The panel outlined in colour has the lowest total movement.</p>
+  </div>
+</section>
+
+<section id="results">
+  <div class="wrap">
+    <p class="eyebrow">04 · Measured results</p>
+    <h2>Benchmark: five traces, four policies</h2>
+    <p class="sub">From <code>benchmark.csv</code>, produced by <code>make bench</code>. Every policy replays the identical trace. Seek distances are exact; times use a seek-delay model of 10 µs plus 2 µs per block moved.</p>
+    <div class="tabs" role="tablist" id="metricTabs"></div>
+    <div class="chart-card">
+      <div class="chart-legend" id="chartLegend"></div>
+      <svg id="chart" viewBox="0 0 900 360" role="img" aria-label="Benchmark chart"></svg>
+    </div>
+    <div class="findings">
+      <div class="card finding"><b>FCFS loses badly under contention</b><p>On the concurrent trace it moves the head 27,402 blocks; SSTF and Adaptive need 4,029.</p></div>
+      <div class="card finding"><b>SCAN is the fairest</b><p>Lowest average and maximum wait on the concurrent trace, because nothing is left stranded behind the head.</p></div>
+      <div class="card finding"><b>No policy wins everywhere</b><p>On clustered requests SCAN is worst: it sweeps to the disk edge even though every request is nearby.</p></div>
+    </div>
+    <p class="caveat">Traces are short (7 to 16 requests), so timing columns vary from run to run by a few milliseconds; seek distance is the stable comparison. The mounted file system records the same metrics from real FUSE traffic.</p>
+  </div>
+</section>
+
+<section id="run">
+  <div class="wrap">
+    <p class="eyebrow">05 · Run it</p>
+    <h2>Live demo in four commands</h2>
+    <p class="sub">On Ubuntu 22.04 or 24.04 (or WSL 2) with <code>libfuse3-dev</code> and <code>fuse3</code> installed:</p>
+<pre class="term"><span class="c"># build, format a 16 MiB image, mount with SSTF</span>
+make
+./mkfs.schedfs disk.img 16M
+mkdir -p mnt &amp;&amp; ./schedfs disk.img mnt --sched=sstf
+
+<span class="c"># in a second terminal: it is a real directory</span>
+mkdir mnt/project
+echo 'Operating Systems' &gt; mnt/project/demo.txt
+cat mnt/project/demo.txt
+stat mnt/project/demo.txt
+fusermount3 -u mnt
+
+<span class="c"># reproduce the numbers above and run every test</span>
+make bench &amp;&amp; python3 scripts/plot_results.py
+make test</pre>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">SchedFS is a teaching file system: no journal, no crash recovery, no cache. Built to make the trade-offs between disk-scheduling policies visible on real file-system traffic.</div>
+</footer>
+
+<script>
+(function () {
+  "use strict";
+
+  /* ---------- theme toggle ---------- */
+  var root = document.documentElement;
+  try { var saved = localStorage.getItem("schedfs-theme"); if (saved) root.setAttribute("data-theme", saved); } catch (e) {}
+  document.getElementById("themeBtn").addEventListener("click", function () {
+    var dark = root.getAttribute("data-theme") === "dark" ||
+      (!root.getAttribute("data-theme") && matchMedia("(prefers-color-scheme: dark)").matches);
+    var next = dark ? "light" : "dark";
+    root.setAttribute("data-theme", next);
+    try { localStorage.setItem("schedfs-theme", next); } catch (e) {}
+    drawChart(); renderPanels(progress);
+  });
+
+  var POLICIES = [
+    { key: "fcfs", label: "FCFS", color: "--fcfs" },
+    { key: "sstf", label: "SSTF", color: "--sstf" },
+    { key: "scan", label: "SCAN", color: "--scan" },
+    { key: "adaptive", label: "Adaptive", color: "--adaptive" }
+  ];
+  function cssVar(name) { return getComputedStyle(root).getPropertyValue(name).trim(); }
+
+  /* ---------- traces (same as src/bench/benchmark_main.c and tests/test_scheduler.c) ---------- */
+  var TRACES = [
+    { key: "textbook", label: "Textbook trace · 8 requests · disk of 200 blocks", disk: 200, head: 53, blocks: [98, 183, 37, 122, 14, 124, 65, 67] },
+    { key: "sequential", label: "Benchmark: sequential", disk: 4096, head: 53, blocks: [10, 11, 12, 13, 14, 15, 16, 17] },
+    { key: "random", label: "Benchmark: random", disk: 4096, head: 53, blocks: [145, 12, 98, 176, 32, 67, 4] },
+    { key: "clustered", label: "Benchmark: clustered", disk: 4096, head: 53, blocks: [90, 93, 96, 101, 104, 108, 111] },
+    { key: "mixed", label: "Benchmark: mixed", disk: 4096, head: 53, blocks: [10, 11, 12, 145, 13, 14, 67, 15, 16, 176, 17] },
+    { key: "concurrent", label: "Benchmark: concurrent · 16 requests", disk: 4096, head: 53, blocks: [300, 12, 900, 13, 1500, 14, 2200, 15, 3010, 16, 44, 17, 1888, 18, 4000, 19] }
+  ];
+
+  /* ---------- port of scheduler_pick() ---------- */
+  function older(a, b) { return a.arrival !== b.arrival ? a.arrival < b.arrival : a.id < b.id; }
+  function dist(a, b) { return Math.abs(a - b); }
+
+  function pick(s, items, now) {
+    var best = 0, i;
+    if (items.length < 2 || s.policy === "fcfs") {
+      for (i = 1; i < items.length; i++) if (older(items[i], items[best])) best = i;
+      return best;
+    }
+    if (s.policy === "sstf") {
+      for (i = 1; i < items.length; i++) {
+        var di = dist(s.head, items[i].block), db = dist(s.head, items[best].block);
+        if (di < db || (di === db && older(items[i], items[best]))) best = i;
+      }
+      return best;
+    }
+    if (s.policy === "scan") {
+      var found = false;
+      for (i = 0; i < items.length; i++) {
+        var ok = s.dir > 0 ? items[i].block >= s.head : items[i].block <= s.head;
+        if (!ok) continue;
+        var d1 = dist(s.head, items[i].block), d2 = dist(s.head, items[best].block);
+        if (!found || d1 < d2 || (d1 === d2 && older(items[i], items[best]))) { best = i; found = true; }
+      }
+      if (found) return best;
+      for (i = 1; i < items.length; i++) {
+        var e1 = dist(s.head, items[i].block), e2 = dist(s.head, items[best].block);
+        if (e1 < e2 || (e1 === e2 && older(items[i], items[best]))) best = i;
+      }
+      return best;
+    }
+    var maxWait = 0;
+    for (i = 0; i < items.length; i++) maxWait = Math.max(maxWait, now - items[i].arrival);
+    var bestScore = Infinity;
+    for (i = 0; i < items.length; i++) {
+      var dn = dist(s.head, items[i].block) / s.disk;
+      var wn = maxWait > 0 ? (now - items[i].arrival) / maxWait : 0;
+      var score = s.alpha * dn - s.beta * wn;
+      if (score < bestScore - 1e-12 || (Math.abs(score - bestScore) <= 1e-12 && older(items[i], items[best]))) {
+        best = i; bestScore = score;
+      }
+    }
+    return best;
+  }
+
+  /* Replays a trace the way schedfs-bench does, with a modelled clock instead of a measured one. */
+  function simulate(trace, policy, opts) {
+    var s = { policy: policy, disk: trace.disk, head: opts.head, dir: -1, alpha: opts.alpha, beta: opts.beta };
+    var pending = trace.blocks.map(function (b, i) { return { id: i + 1, block: b, arrival: i * 0.001 }; });
+    var now = 0, total = 0, steps = [];
+    while (pending.length) {
+      var k = pick(s, pending, now);
+      var next = pending[k].block, from = s.head, move = dist(from, next), edge = null;
+      if (policy === "scan" && s.dir < 0 && next > from) { edge = 0; move = from + next; s.dir = 1; }
+      else if (policy === "scan" && s.dir > 0 && next < from) { edge = trace.disk - 1; move = (trace.disk - 1 - from) + (trace.disk - 1 - next); s.dir = -1; }
+      total += move;
+      steps.push({ from: from, to: next, edge: edge, move: move, total: total });
+      s.head = next;
+      pending.splice(k, 1);
+      now += 0.010 + 0.002 * move;
+    }
+    return { steps: steps, total: total };
+  }
+
+  /* ---------- lab UI ---------- */
+  var wlSel = document.getElementById("wl"), headIn = document.getElementById("head");
+  var alphaIn = document.getElementById("alpha"), betaIn = document.getElementById("beta");
+  var customIn = document.getElementById("custom");
+  TRACES.forEach(function (t) {
+    var o = document.createElement("option"); o.value = t.key; o.textContent = t.label; wlSel.appendChild(o);
+  });
+  var custom = null, results = {}, progress = 0, playing = false, lastTs = 0;
+  var panelsEl = document.getElementById("panels");
+
+  function currentTrace() {
+    if (custom) return custom;
+    return TRACES.filter(function (t) { return t.key === wlSel.value; })[0];
+  }
+
+  function recompute() {
+    var t = currentTrace();
+    var head = Math.max(0, Math.min(t.disk - 1, parseInt(headIn.value, 10) || 0));
+    var opts = { head: head, alpha: parseFloat(alphaIn.value), beta: parseFloat(betaIn.value) };
+    POLICIES.forEach(function (p) { results[p.key] = simulate(t, p.key, opts); });
+    results.head = head;
+    buildPanels();
+    renderPanels(progress);
+  }
+
+  function buildPanels() {
+    var t = currentTrace(), best = Math.min.apply(null, POLICIES.map(function (p) { return results[p.key].total; }));
+    panelsEl.innerHTML = "";
+    POLICIES.forEach(function (p) {
+      var r = results[p.key];
+      var el = document.createElement("div");
+      el.className = "panel" + (r.total === best ? " best" : "");
+      el.style.color = "var(" + p.color + ")";
+      el.innerHTML =
+        '<div class="panel-head"><h3 style="color:var(--ink)"><span class="dot" style="background:var(' + p.color + ')"></span>' + p.label + '</h3>' +
+        '<div class="seek" style="color:var(--ink)"><span data-seek>0</span><small>blocks</small></div></div>' +
+        '<svg viewBox="0 0 240 230" data-svg aria-label="' + p.label + ' head movement"></svg>' +
+        '<div class="order" data-order></div>' +
+        '<div class="meta" data-meta>Final total: ' + r.total.toLocaleString() + ' blocks</div>';
+      panelsEl.appendChild(el);
+      var order = el.querySelector("[data-order]");
+      r.steps.forEach(function (st) {
+        if (st.edge !== null) { var e = document.createElement("span"); e.className = "edge"; e.textContent = st.edge; order.appendChild(e); }
+        var c = document.createElement("span"); c.textContent = st.to; order.appendChild(c);
+      });
+    });
+    document.getElementById("progress").textContent = Math.floor(progress) + " / " + t.blocks.length + " served";
+  }
+
+  /* Position of the head after serving `p` requests (fractional p interpolates by distance). */
+  function headAt(r, p) {
+    if (p <= 0 || !r.steps.length) return { x: results.head, seek: 0 };
+    var n = r.steps.length, j = Math.min(Math.floor(p), n), f = p - j;
+    var before = j > 0 ? r.steps[j - 1].total : 0;
+    if (j >= n) return { x: r.steps[n - 1].to, seek: r.total };
+    var st = r.steps[j], travelled = st.move * f, x;
+    if (st.edge === null) x = st.from + (st.to - st.from) * f;
+    else {
+      var leg1 = Math.abs(st.from - st.edge);
+      x = travelled <= leg1 ? st.from + Math.sign(st.edge - st.from) * travelled
+                            : st.edge + Math.sign(st.to - st.edge) * (travelled - leg1);
+    }
+    return { x: x, seek: before + travelled };
+  }
+
+  function renderPanels(p) {
+    var t = currentTrace(), n = t.blocks.length;
+    var W = 240, H = 230, L = 8, R = 8, T = 26, B = 8;
+    var sx = function (b) { return L + (b / (t.disk - 1)) * (W - L - R); };
+    var sy = function (k) { return T + (k / n) * (H - T - B); };
+    var ink3 = cssVar("--ink-3"), line = cssVar("--line");
+    Array.prototype.forEach.call(panelsEl.children, function (el, idx) {
+      var pol = POLICIES[idx], r = results[pol.key], col = cssVar(pol.color);
+      var svg = el.querySelector("[data-svg]"), parts = [];
+      parts.push('<line x1="' + L + '" y1="' + (T - 6) + '" x2="' + (W - R) + '" y2="' + (T - 6) + '" stroke="' + line + '"/>');
+      t.blocks.forEach(function (b) {
+        parts.push('<line x1="' + sx(b) + '" y1="' + (T - 11) + '" x2="' + sx(b) + '" y2="' + (T - 1) + '" stroke="' + ink3 + '" stroke-width="1"/>');
+      });
+      parts.push('<text x="' + L + '" y="10" font-size="9" fill="' + ink3 + '" font-family="monospace">0</text>');
+      parts.push('<text x="' + (W - R) + '" y="10" font-size="9" fill="' + ink3 + '" text-anchor="end" font-family="monospace">' + (t.disk - 1) + '</text>');
+      // Path of the head up to progress p.
+      var pts = [[sx(results.head), sy(0)]], whole = Math.min(Math.floor(p), n);
+      for (var j = 0; j < whole; j++) {
+        var st = r.steps[j];
+        if (st.edge !== null) {
+          var fr = Math.abs(st.from - st.edge) / st.move;
+          pts.push([sx(st.edge), sy(j + fr)]);
+        }
+        pts.push([sx(st.to), sy(j + 1)]);
+      }
+      if (p < n && p > whole) {
+        var stp = r.steps[whole], f = p - whole;
+        if (stp.edge !== null) {
+          var fr2 = Math.abs(stp.from - stp.edge) / stp.move;
+          if (f > fr2) pts.push([sx(stp.edge), sy(whole + fr2)]);
+        }
+        pts.push([sx(headAt(r, p).x), sy(p)]);
+      }
+      parts.push('<polyline fill="none" stroke="' + col + '" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" points="' +
+        pts.map(function (q) { return q[0].toFixed(1) + "," + q[1].toFixed(1); }).join(" ") + '"/>');
+      for (var k = 1; k <= whole; k++) {
+        parts.push('<circle cx="' + sx(r.steps[k - 1].to) + '" cy="' + sy(k) + '" r="2.6" fill="' + col + '"/>');
+      }
+      var last = pts[pts.length - 1];
+      parts.push('<circle cx="' + last[0] + '" cy="' + last[1] + '" r="4.5" fill="' + cssVar("--surface") + '" stroke="' + col + '" stroke-width="2"/>');
+      svg.innerHTML = parts.join("");
+      el.querySelector("[data-seek]").textContent = Math.round(headAt(r, p).seek).toLocaleString();
+      var chips = el.querySelectorAll("[data-order] span:not(.edge)");
+      Array.prototype.forEach.call(chips, function (c, i) {
+        var done = i < whole;
+        c.className = done ? "done" : "";
+        c.style.background = done ? col : "";
+      });
+    });
+    document.getElementById("progress").textContent = Math.floor(p) + " / " + n + " served";
+    document.getElementById("play").textContent = playing ? "❚❚ Pause" : (p >= n ? "↺ Replay" : "▶ Play");
+  }
+
+  function tick(ts) {
+    if (!playing) return;
+    var n = currentTrace().blocks.length;
+    var dt = lastTs ? (ts - lastTs) / 1000 : 0; lastTs = ts;
+    progress = Math.min(n, progress + dt * 1.4 * parseFloat(document.getElementById("speed").value));
+    if (progress >= n) playing = false;
+    renderPanels(progress);
+    if (playing) requestAnimationFrame(tick);
+  }
+
+  document.getElementById("play").addEventListener("click", function () {
+    var n = currentTrace().blocks.length;
+    if (playing) { playing = false; renderPanels(progress); return; }
+    if (progress >= n) progress = 0;
+    playing = true; lastTs = 0; requestAnimationFrame(tick);
+  });
+  document.getElementById("step").addEventListener("click", function () {
+    playing = false;
+    progress = Math.min(currentTrace().blocks.length, Math.floor(progress) + 1);
+    renderPanels(progress);
+  });
+  document.getElementById("reset").addEventListener("click", function () { playing = false; progress = 0; renderPanels(0); });
+
+  function restart() { playing = false; progress = 0; recompute(); }
+  wlSel.addEventListener("change", function () { custom = null; headIn.value = currentTrace().head; restart(); });
+  headIn.addEventListener("change", restart);
+  [alphaIn, betaIn].forEach(function (inp) {
+    inp.addEventListener("input", function () {
+      document.getElementById(inp.id + "Out").textContent = parseFloat(inp.value).toFixed(2);
+      restart();
+    });
+  });
+  document.getElementById("applyCustom").addEventListener("click", function () {
+    var nums = (customIn.value.match(/\d+/g) || []).map(Number).slice(0, 40);
+    if (!nums.length) { customIn.focus(); return; }
+    var disk = Math.max(200, Math.max.apply(null, nums.concat([parseInt(headIn.value, 10) || 0])) + 1);
+    custom = { key: "custom", label: "Custom", disk: disk, head: parseInt(headIn.value, 10) || 0, blocks: nums };
+    restart();
+  });
+  customIn.addEventListener("keydown", function (e) { if (e.key === "Enter") document.getElementById("applyCustom").click(); });
+
+  /* ---------- benchmark chart ---------- */
+  var CSV = [
+    "sequential,fcfs,50,6.250,7.414875,14.496000,512.821",
+    "sequential,sstf,43,5.375,5.758925,12.117500,609.617",
+    "sequential,scan,43,5.375,6.886688,13.109000,567.030",
+    "sequential,adaptive,49,6.125,1.809325,3.956800,1791.072",
+    "random,fcfs,631,90.143,1.660843,3.186800,1893.888",
+    "random,sstf,295,42.143,1.532271,3.044900,1811.313",
+    "random,scan,229,32.714,4.583000,9.617300,658.786",
+    "random,adaptive,295,42.143,4.137286,7.048200,657.209",
+    "clustered,fcfs,58,8.286,4.995471,11.512500,576.117",
+    "clustered,sstf,58,8.286,3.087829,7.167400,915.499",
+    "clustered,scan,164,23.429,5.567129,9.975300,657.320",
+    "clustered,adaptive,58,8.286,3.914143,7.406800,872.339",
+    "mixed,fcfs,736,66.909,8.418945,16.214500,635.857",
+    "mixed,sstf,237,21.545,6.081864,11.937300,883.066",
+    "mixed,scan,229,20.818,8.798018,16.693200,613.442",
+    "mixed,adaptive,237,21.545,5.076745,14.824500,648.249",
+    "concurrent,fcfs,27402,1712.625,32.976044,71.271500,192.566",
+    "concurrent,sstf,4029,251.813,21.925044,43.781300,344.487",
+    "concurrent,scan,4053,253.313,8.597594,20.879100,690.599",
+    "concurrent,adaptive,4029,251.813,12.814431,28.335800,513.848"
+  ].map(function (l) {
+    var c = l.split(",");
+    return { w: c[0], p: c[1], total_seek: +c[2], average_seek: +c[3], average_wait_ms: +c[4], maximum_wait_ms: +c[5], throughput_rps: +c[6] };
+  });
+  var METRICS = [
+    { key: "total_seek", label: "Total seek", unit: "blocks", log: true, better: "lower" },
+    { key: "average_wait_ms", label: "Average wait", unit: "ms", log: false, better: "lower" },
+    { key: "maximum_wait_ms", label: "Maximum wait", unit: "ms", log: false, better: "lower" },
+    { key: "throughput_rps", label: "Throughput", unit: "requests/s", log: false, better: "higher" }
+  ];
+  var WL = ["sequential", "random", "clustered", "mixed", "concurrent"];
+  var metric = METRICS[0];
+  var tabs = document.getElementById("metricTabs");
+  METRICS.forEach(function (m, i) {
+    var b = document.createElement("button");
+    b.className = "tab"; b.type = "button"; b.setAttribute("role", "tab");
+    b.setAttribute("aria-selected", i === 0 ? "true" : "false");
+    b.textContent = m.label;
+    b.addEventListener("click", function () {
+      metric = m;
+      Array.prototype.forEach.call(tabs.children, function (x) { x.setAttribute("aria-selected", x === b ? "true" : "false"); });
+      drawChart();
+    });
+    tabs.appendChild(b);
+  });
+  document.getElementById("chartLegend").innerHTML = POLICIES.map(function (p) {
+    return '<span><span class="dot" style="background:var(' + p.color + ')"></span>' + p.label + "</span>";
+  }).join("");
+
+  function niceMax(v) { var e = Math.pow(10, Math.floor(Math.log10(v))); var m = v / e; return (m <= 1 ? 1 : m <= 2 ? 2 : m <= 5 ? 5 : 10) * e; }
+
+  function drawChart() {
+    var svg = document.getElementById("chart");
+    var W = 900, H = 360, L = 64, R = 12, T = 24, B = 44;
+    var ink2 = cssVar("--ink-2"), ink3 = cssVar("--ink-3"), line = cssVar("--line");
+    var vals = CSV.map(function (r) { return r[metric.key]; });
+    var max = metric.log ? Math.pow(10, Math.ceil(Math.log10(Math.max.apply(null, vals)))) : niceMax(Math.max.apply(null, vals));
+    var minLog = 10;
+    var y = metric.log
+      ? function (v) { return T + (H - T - B) * (1 - (Math.log10(Math.max(v, minLog)) - 1) / (Math.log10(max) - 1)); }
+      : function (v) { return T + (H - T - B) * (1 - v / max); };
+    var parts = [];
+    var ticks = [];
+    if (metric.log) for (var e = 1; Math.pow(10, e) <= max; e++) ticks.push(Math.pow(10, e));
+    else for (var k = 0; k <= 5; k++) ticks.push(max * k / 5);
+    ticks.forEach(function (tv) {
+      var yy = y(tv).toFixed(1);
+      parts.push('<line x1="' + L + '" x2="' + (W - R) + '" y1="' + yy + '" y2="' + yy + '" stroke="' + line + '"/>');
+      parts.push('<text x="' + (L - 8) + '" y="' + yy + '" dy="4" text-anchor="end" font-size="12" fill="' + ink3 + '">' + (tv >= 1000 ? (tv / 1000) + "k" : +tv.toFixed(1)) + "</text>");
+    });
+    parts.push('<text x="14" y="' + (T + (H - T - B) / 2) + '" font-size="12" fill="' + ink3 + '" transform="rotate(-90 14 ' + (T + (H - T - B) / 2) + ')" text-anchor="middle">' +
+      metric.unit + (metric.log ? " (log)" : "") + " · " + metric.better + " is better</text>");
+    var gw = (W - L - R) / WL.length, bw = Math.min(30, (gw - 24) / 4);
+    WL.forEach(function (w, gi) {
+      var gx = L + gi * gw + (gw - bw * 4 - 6) / 2;
+      var rows = POLICIES.map(function (p) { return CSV.filter(function (r) { return r.w === w && r.p === p.key; })[0]; });
+      var bestVal = metric.better === "lower" ? Math.min.apply(null, rows.map(function (r) { return r[metric.key]; }))
+                                              : Math.max.apply(null, rows.map(function (r) { return r[metric.key]; }));
+      rows.forEach(function (r, pi) {
+        var v = r[metric.key], x = gx + pi * (bw + 2), yy = y(v), h = (H - B) - yy;
+        var col = cssVar(POLICIES[pi].color);
+        parts.push('<rect x="' + x.toFixed(1) + '" y="' + yy.toFixed(1) + '" width="' + bw.toFixed(1) + '" height="' + Math.max(h, 1).toFixed(1) + '" rx="3" fill="' + col + '"' +
+          (v === bestVal ? '' : ' opacity=".78"') + '><title>' + POLICIES[pi].label + " · " + w + ": " + v.toLocaleString() + " " + metric.unit + "</title></rect>");
+        if (v === bestVal) parts.push('<text x="' + (x + bw / 2).toFixed(1) + '" y="' + (yy - 6).toFixed(1) + '" text-anchor="middle" font-size="11" font-weight="700" fill="' + ink2 + '">★</text>');
+      });
+      parts.push('<text x="' + (L + gi * gw + gw / 2) + '" y="' + (H - B + 22) + '" text-anchor="middle" font-size="13" fill="' + ink2 + '">' + w.charAt(0).toUpperCase() + w.slice(1) + "</text>");
+    });
+    parts.push('<line x1="' + L + '" x2="' + (W - R) + '" y1="' + (H - B) + '" y2="' + (H - B) + '" stroke="' + ink3 + '"/>');
+    svg.innerHTML = parts.join("");
+  }
+
+  headIn.value = TRACES[0].head;
+  recompute();
+  drawChart();
+})();
+</script>
+</body>
+</html>
