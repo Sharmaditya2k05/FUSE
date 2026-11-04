@@ -10,7 +10,7 @@
 ![Policies](https://img.shields.io/badge/schedulers-FCFS%20%7C%20SSTF%20%7C%20SCAN%20%7C%20Adaptive-blueviolet)
 ![License](https://img.shields.io/badge/license-see%20LICENSE-lightgrey)
 
-[Interactive demo](docs/index.html) · [Architecture](docs/architecture.md) · [Implementation](docs/implementation.md) · [Testing](docs/testing.md)
+**[▶ Live interactive demo](https://sharmaditya2k05.github.io/FUSE/)** · [Architecture](docs/architecture.md) · [Implementation](docs/implementation.md) · [Testing](docs/testing.md)
 
 </div>
 
@@ -88,7 +88,7 @@ Head at block **53**, queue `98, 183, 37, 122, 14, 124, 65, 67`. This exact case
 | SSTF | 65 → 67 → 37 → 14 → 98 → 122 → 124 → 183 | **236** blocks |
 | SCAN (moving toward 0) | 37 → 14 → *(0)* → 65 → 67 → 98 → 122 → 124 → 183 | **236** blocks |
 
-You can step through this trace, and the benchmark traces, in the **[interactive demo](docs/index.html)**.
+You can step through this trace, and the benchmark traces, in the **[interactive demo](https://sharmaditya2k05.github.io/FUSE/)** (source in [`docs/index.html`](docs/index.html)).
 
 ## Results
 
