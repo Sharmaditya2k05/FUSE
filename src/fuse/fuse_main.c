@@ -14,6 +14,39 @@
 #include <unistd.h>
 
 static sfs_t g_fs;
+static bool g_mounted;
+
+/* Mount settings, kept until op_init can start the file system. */
+static struct {
+    char *image;
+    sched_policy_t policy;
+    double alpha, beta;
+    bool verbose;
+} g_cfg;
+
+/*
+ * Runs after fuse_main() has daemonized. The dispatcher thread must be created
+ * here: threads started before the fork() would not exist in the daemon.
+ */
+static void *op_init(struct fuse_conn_info *conn, struct fuse_config *cfg) {
+    (void)conn;
+    (void)cfg;
+    int rc = sfs_mount_image(&g_fs, g_cfg.image, g_cfg.policy, g_cfg.alpha, g_cfg.beta,
+                             g_cfg.verbose);
+    if (rc) {
+        sfs_log(LOG_ERROR, "cannot start file system: %s", strerror(-rc));
+        fuse_exit(fuse_get_context()->fuse);
+    } else
+        g_mounted = true;
+    return NULL;
+}
+
+static void op_destroy(void *private_data) {
+    (void)private_data;
+    if (g_mounted)
+        sfs_unmount_image(&g_fs);
+    g_mounted = false;
+}
 
 static int op_getattr(const char *p, struct stat *s, struct fuse_file_info *fi) {
     (void)fi;
@@ -107,7 +140,9 @@ static int op_fsync(const char *p, int d, struct fuse_file_info *i) {
     (void)i;
     return fsync(g_fs.disk.fd) ? -errno : 0;
 }
-static struct fuse_operations ops = {.getattr = op_getattr,
+static struct fuse_operations ops = {.init = op_init,
+                                     .destroy = op_destroy,
+                                     .getattr = op_getattr,
                                      .readdir = op_readdir,
                                      .create = op_create,
                                      .open = op_open,
@@ -166,19 +201,34 @@ int main(int argc, char **argv) {
         free(fa);
         return 2;
     }
+    /* FUSE changes directory to / when it daemonizes, so keep an absolute path. */
+    g_cfg.image = realpath(image, NULL);
+    if (!g_cfg.image) {
+        fprintf(stderr, "cannot open image: %s\n", strerror(errno));
+        free(fa);
+        return 1;
+    }
+    g_cfg.policy = policy;
+    g_cfg.alpha = alpha;
+    g_cfg.beta = beta;
+    g_cfg.verbose = verbose;
     logger_open("filesystem.log", verbose);
-    int rc = sfs_mount_image(&g_fs, image, policy, alpha, beta, verbose);
+    /* Validate the image now so errors reach the terminal; op_init mounts it for real. */
+    int rc = sfs_mount_image(&g_fs, g_cfg.image, policy, alpha, beta, verbose);
     if (rc) {
         fprintf(stderr, "cannot open image: %s\n", strerror(-rc));
+        free(g_cfg.image);
         free(fa);
         logger_close();
         return 1;
     }
-    printf("SchedFS: %u blocks x %u bytes, %u inodes, scheduler=%s, dispatcher=running\n",
-           g_fs.sb.total_blocks, g_fs.sb.block_size, g_fs.sb.total_inodes, scheduler_name(policy));
-    rc = fuse_main(fc, fa, &ops, NULL);
+    printf("SchedFS: %u blocks x %u bytes, %u inodes, scheduler=%s\n", g_fs.sb.total_blocks,
+           g_fs.sb.block_size, g_fs.sb.total_inodes, scheduler_name(policy));
     sfs_unmount_image(&g_fs);
+    fflush(stdout);
+    rc = fuse_main(fc, fa, &ops, NULL);
     logger_close();
+    free(g_cfg.image);
     free(fa);
     return rc;
 }

@@ -293,7 +293,7 @@ footer { padding: 30px 0 50px; color: var(--ink-3); font-size: 13px; border-top:
   <div class="wrap">
     <p class="eyebrow">04 · Measured results</p>
     <h2>Benchmark: five traces, four policies</h2>
-    <p class="sub">From <code>benchmark.csv</code>, produced by <code>make bench</code>. Every policy replays the identical trace. Seek distances are exact; times use a seek-delay model of 10 µs plus 2 µs per block moved.</p>
+    <p class="sub">From <code>benchmark.csv</code>, produced by <code>make bench</code>. Every policy replays the identical trace. FCFS, SSTF and SCAN seek distances are exact; Adaptive uses the measured clock, so its totals can shift between runs. Times use a seek-delay model of 10 µs plus 2 µs per block moved.</p>
     <div class="tabs" role="tablist" id="metricTabs"></div>
     <div class="chart-card">
       <div class="chart-legend" id="chartLegend"></div>
@@ -304,7 +304,7 @@ footer { padding: 30px 0 50px; color: var(--ink-3); font-size: 13px; border-top:
       <div class="card finding"><b>SCAN is the fairest</b><p>Lowest average and maximum wait on the concurrent trace, because nothing is left stranded behind the head.</p></div>
       <div class="card finding"><b>No policy wins everywhere</b><p>On clustered requests SCAN is worst: it sweeps to the disk edge even though every request is nearby.</p></div>
     </div>
-    <p class="caveat">Traces are short (7 to 16 requests), so timing columns vary from run to run by a few milliseconds; seek distance is the stable comparison. The mounted file system records the same metrics from real FUSE traffic.</p>
+    <p class="caveat">Traces are short (7 to 16 requests), so timing columns vary from run to run by a few milliseconds; seek distance for FCFS, SSTF and SCAN is the stable comparison. The lab above uses a modelled clock, so Adaptive there is repeatable. The mounted file system records the same metrics from real FUSE traffic.</p>
   </div>
 </section>
 

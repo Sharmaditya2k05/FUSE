@@ -463,6 +463,9 @@ void sfs_unmount_image(sfs_t *fs) {
     sync_sb(fs);
     sync_bitmap(fs);
     vdisk_close(&fs->disk);
+    sfs_log(LOG_INFO, "unmounted image: %llu requests, total seek %llu blocks",
+            (unsigned long long)fs->disk.metrics.requests,
+            (unsigned long long)fs->disk.metrics.total_seek);
     free(fs->bitmap);
     for (uint32_t i = 0; i <= fs->sb.total_inodes; ++i) {
         pthread_rwlock_destroy(&fs->inode_locks[i]);

@@ -17,4 +17,18 @@ for policy in fcfs sstf scan adaptive; do
   mv "$mnt/docs/a.txt" "$mnt/docs/b.txt"; rm "$mnt/docs/b.txt"; rmdir "$mnt/docs"
   fusermount3 -u "$mnt"; wait "$pid" || true
 done
+# Background (daemonized) mount, as documented in the README: no -f, relative image path.
+cp "$image" "$tmp/bg.img"
+(cd "$tmp" && "$OLDPWD/schedfs" bg.img mnt --sched=scan >/dev/null)
+for _ in {1..50}; do mountpoint -q "$mnt" && break; sleep .1; done
+mountpoint -q "$mnt" || { echo "background mount failed"; exit 1; }
+timeout 10 mkdir "$mnt/bg" || { echo "background mount does not serve I/O"; exit 1; }
+timeout 10 sh -c "echo persisted > '$mnt/bg/x.txt'"
+test "$(timeout 10 cat "$mnt/bg/x.txt")" = persisted
+fusermount3 -u "$mnt"
+for _ in {1..50}; do mountpoint -q "$mnt" || break; sleep .1; done
+(cd "$tmp" && "$OLDPWD/schedfs" bg.img mnt --sched=fcfs >/dev/null)
+for _ in {1..50}; do mountpoint -q "$mnt" && break; sleep .1; done
+test "$(timeout 10 cat "$mnt/bg/x.txt")" = persisted || { echo "data lost across remount"; exit 1; }
+fusermount3 -u "$mnt"
 echo "FUSE system tests passed"

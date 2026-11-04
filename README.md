@@ -92,7 +92,7 @@ You can step through this trace, and the benchmark traces, in the **[interactive
 
 ## Results
 
-`make bench` replays five fixed traces under every policy, so all policies see identical input. Seek distance is exact. Timing uses a small seek-delay model (10 µs + 2 µs per block moved) so that differences show up on SSDs and virtual machines.
+`make bench` replays five fixed traces under every policy, so all policies see identical input. FCFS, SSTF and SCAN seek distances are exact and repeat on every run; Adaptive reads the real clock to measure waiting time, so its choices (and seek totals) can shift slightly between runs. Timing uses a small seek-delay model (10 µs + 2 µs per block moved) so that differences show up on SSDs and virtual machines.
 
 ![Summary of benchmark results](results/summary.png)
 
