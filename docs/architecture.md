@@ -10,6 +10,6 @@ The default image uses 4096-byte blocks: block 0 is the superblock, the next blo
 
 ## Locking
 
-The intended acquisition order is directory mutex, inode rwlock, bitmap mutex, superblock mutex, then queue mutex. Queue I/O is not executed while the queue mutex is held. Each request has a separate completion mutex and condition. File reads take a shared inode lock; writes and truncation take an exclusive inode lock.
+The intended acquisition order is directory mutex, inode rwlock, inode-allocation mutex, inode-table mutex, bitmap mutex, superblock mutex, then queue mutex. The inode-table mutex exists because 32 inodes share one 4096-byte table block: without it, two threads updating different inodes in the same block could each read the block, patch their own inode and write it back, silently undoing the other's update. Queue I/O is not executed while the queue mutex is held. Each request has a separate completion mutex and condition. File reads take a shared inode lock; writes and truncation take an exclusive inode lock.
 
 The format is educational: it has no journal or crash-recovery pass. A clean unmount is required for persistence guarantees.

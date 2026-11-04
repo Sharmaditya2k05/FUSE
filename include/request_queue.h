@@ -1,3 +1,8 @@
+/*
+ * request_queue.h
+ *
+ * Bounded multi-producer / single-consumer queue of pending disk requests.
+ */
 #ifndef SCHEDFS_REQUEST_QUEUE_H
 #define SCHEDFS_REQUEST_QUEUE_H
 #include <pthread.h>
@@ -5,6 +10,7 @@
 #include <stddef.h>
 #include "request.h"
 #include "scheduler.h"
+
 typedef struct {
     disk_request_t **items;
     size_t count, capacity;
@@ -12,6 +18,7 @@ typedef struct {
     pthread_mutex_t mutex;
     pthread_cond_t not_empty, not_full;
 } request_queue_t;
+
 int rq_init(request_queue_t *q, size_t capacity);
 int rq_submit(request_queue_t *q, disk_request_t *r);
 disk_request_t *rq_take(request_queue_t *q, const scheduler_t *scheduler);
