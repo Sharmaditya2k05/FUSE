@@ -1,0 +1,13 @@
+student@ubuntu:~/FUSE$ ./schedfs disk.img mnt --sched=lifo
+Usage: ./schedfs IMAGE MOUNTPOINT [--sched=fcfs|sstf|scan|adaptive]
+       [--alpha=N] [--beta=N] [--verbose] [FUSE options]
+
+student@ubuntu:~/FUSE$ ./schedfs nosuch.img mnt
+cannot open image: No such file or directory
+
+student@ubuntu:~/FUSE$ head -c 1M /dev/zero > junk.img && ./schedfs junk.img mnt
+cannot open image: Invalid argument
+
+student@ubuntu:~/FUSE$ ./schedfs disk.img mnt --alpha=-1
+alpha and beta must be non-negative
+

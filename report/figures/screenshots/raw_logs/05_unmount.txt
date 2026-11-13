@@ -1,0 +1,16 @@
+student@ubuntu:~/FUSE$ fusermount3 -u mnt
+
+student@ubuntu:~/FUSE$ cat filesystem.log
+2026-11-13T12:49:54.871 [INFO] mounted image: 4096 blocks, scheduler=sstf
+2026-11-13T12:49:54.873 [INFO] unmounted image: 3 requests, total seek 3 blocks
+2026-11-13T12:49:54.876 [INFO] mounted image: 4096 blocks, scheduler=sstf
+2026-11-13T12:49:54.950 [INFO] unmounted image: 899 requests, total seek 4385 blocks
+
+student@ubuntu:~/FUSE$ ./schedfs disk.img mnt --sched=fcfs
+SchedFS: 4096 blocks x 4096 bytes, 256 inodes, scheduler=fcfs
+
+student@ubuntu:~/FUSE$ cat mnt/project/demo.txt
+Operating Systems
+
+student@ubuntu:~/FUSE$ fusermount3 -u mnt
+

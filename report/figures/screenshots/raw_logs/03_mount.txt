@@ -1,0 +1,36 @@
+student@ubuntu:~/FUSE$ mkdir -p mnt
+
+student@ubuntu:~/FUSE$ ./schedfs disk.img mnt --sched=sstf
+SchedFS: 4096 blocks x 4096 bytes, 256 inodes, scheduler=sstf
+
+student@ubuntu:~/FUSE$ mount | grep schedfs
+/home/student/FUSE/schedfs on /home/student/FUSE/mnt type fuse.schedfs (rw,nosuid,nodev,relatime,user_id=1001,group_id=1001)
+
+student@ubuntu:~/FUSE$ mkdir mnt/project
+
+student@ubuntu:~/FUSE$ echo 'Operating Systems' > mnt/project/demo.txt
+
+student@ubuntu:~/FUSE$ cat mnt/project/demo.txt
+Operating Systems
+
+student@ubuntu:~/FUSE$ cp mnt/project/demo.txt mnt/project/copy.txt
+
+student@ubuntu:~/FUSE$ head -c 100000 /dev/urandom > /tmp/big.bin && cp /tmp/big.bin mnt/project/big.bin && cmp /tmp/big.bin mnt/project/big.bin && echo identical
+identical
+
+student@ubuntu:~/FUSE$ ls -l mnt/project
+total 99
+-rw-rw-r-- 1 student student 100000 Nov 13 12:49 big.bin
+-rw-rw-r-- 1 student student     18 Nov 13 12:49 copy.txt
+-rw-rw-r-- 1 student student     18 Nov 13 12:49 demo.txt
+
+student@ubuntu:~/FUSE$ stat mnt/project/copy.txt
+  File: mnt/project/copy.txt
+  Size: 18        	Blocks: 1          IO Block: 4096   regular file
+Device: 0,93	Inode: 4           Links: 1
+Access: (0664/-rw-rw-r--)  Uid: ( 1001/ student)   Gid: ( 1001/ student)
+Access: 2026-11-13 12:49:54.000000000 +0000
+Modify: 2026-11-13 12:49:54.000000000 +0000
+Change: 2026-11-13 12:49:54.000000000 +0000
+ Birth: -
+

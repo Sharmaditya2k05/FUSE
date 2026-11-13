@@ -1,0 +1,13 @@
+student@ubuntu:~/FUSE$ gcc -Iinclude -D_FILE_OFFSET_BITS=64 -D_DEFAULT_SOURCE -std=gnu11 -O1 -g -fsanitize=thread -o test_core_tsan tests/test_core.c src/utils/logger.c src/sched/scheduler.c src/sync/request_queue.c src/bench/metrics.c src/storage/virtual_disk.c src/fs/filesystem.c -pthread -lm
+
+student@ubuntu:~/FUSE$ rm -f t.img && ./mkfs.schedfs t.img 16M
+Formatted t.img: 4096 blocks, 256 inodes, data starts at block 10
+
+student@ubuntu:~/FUSE$ setarch $(uname -m) -R ./test_core_tsan t.img; echo "exit status: $?"
+2026-11-13T12:56:35.695 [INFO] mounted image: 4096 blocks, scheduler=sstf
+2026-11-13T12:56:35.720 [INFO] unmounted image: 658 requests, total seek 5699 blocks
+2026-11-13T12:56:35.722 [INFO] mounted image: 4096 blocks, scheduler=adaptive
+2026-11-13T12:56:35.747 [INFO] unmounted image: 409 requests, total seek 1837 blocks
+core persistence and concurrency tests passed
+exit status: 0
+

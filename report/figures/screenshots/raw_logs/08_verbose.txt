@@ -1,0 +1,18 @@
+student@ubuntu:~/FUSE$ ./schedfs disk.img mnt --sched=scan --verbose
+SchedFS: 4096 blocks x 4096 bytes, 256 inodes, scheduler=scan
+
+student@ubuntu:~/FUSE$ head -c 20000 /dev/urandom > mnt/v.bin && rm mnt/v.bin
+
+student@ubuntu:~/FUSE$ fusermount3 -u mnt
+
+student@ubuntu:~/FUSE$ cat filesystem.log
+2026-11-13T12:49:57.337 [INFO] mounted image: 4096 blocks, scheduler=scan
+2026-11-13T12:49:57.339 [INFO] unmounted image: 3 requests, total seek 3 blocks
+2026-11-13T12:49:57.343 [INFO] mounted image: 4096 blocks, scheduler=scan
+2026-11-13T12:49:57.347 [DEBUG] allocated block 13
+2026-11-13T12:49:57.347 [DEBUG] allocated block 14
+2026-11-13T12:49:57.348 [DEBUG] allocated block 15
+2026-11-13T12:49:57.348 [DEBUG] allocated block 16
+2026-11-13T12:49:57.349 [DEBUG] allocated block 17
+2026-11-13T12:49:57.354 [INFO] unmounted image: 125 requests, total seek 379 blocks
+
