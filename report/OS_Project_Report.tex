@@ -277,7 +277,7 @@ Operating-systems courses treat file systems and disk scheduling as separate top
 \subsection{Functional Requirements}
 \label{sec:fr}
 % ---------------------------------------------------------------------
-\tabref{tab:fr} lists twelve functional requirements, against the minimum of eight ($2 \times 4$). Each one is implemented and is exercised by a test or a captured run in Section~\ref{sec:testing}.
+\tabref{tab:fr} lists twelve functional requirements. Each one is implemented and is exercised by a test or a captured run in Section~\ref{sec:testing}.
 
 {\small
 \begin{longtable}{@{}p{0.9cm}p{3.1cm}p{7.3cm}p{2.6cm}@{}}
@@ -311,7 +311,7 @@ FR12 & Interactive visualisation & A web page animates the head movement of each
 \subsection{Non-Functional Requirements}
 \label{sec:nfr}
 % ---------------------------------------------------------------------
-\tabref{tab:nfr} lists eight non-functional requirements, against the minimum of four ($1 \times 4$), each with the criterion used to check it.
+\tabref{tab:nfr} lists eight non-functional requirements, each with the criterion used to check it.
 
 {\small
 \begin{longtable}{@{}p{0.9cm}p{2.6cm}p{6.6cm}p{3.8cm}@{}}
@@ -341,7 +341,7 @@ NFR8 & Portability & Runs on any Linux system with libfuse~3 and a C11 compiler.
 \subsection{Description of the Modules of the Project}
 \label{sec:modules}
 % ---------------------------------------------------------------------
-SchedFS is organised into ten modules, against the minimum of eight ($2 \times 4$). Nine follow directly from the source tree. The inode and directory layer (M3) and the block-allocation and mapping layer (M4) share \code{src/fs/filesystem.c}, but they are separate groups of functions with separate locks, so they are described separately. \tabref{tab:modsummary} gives an overview, and the paragraphs that follow describe each module.
+SchedFS is organised into ten modules. Nine follow directly from the source tree. The inode and directory layer (M3) and the block-allocation and mapping layer (M4) share \code{src/fs/filesystem.c}, but they are separate groups of functions with separate locks, so they are described separately. \tabref{tab:modsummary} gives an overview, and the paragraphs that follow describe each module.
 
 \begin{table}[H]
 \centering
@@ -1396,7 +1396,7 @@ The listings below are copied verbatim from the repository, by line range, with 
 % ---------------------------------------------------------------------
 \subsection{Code Contribution Summary}
 \label{sec:loc}
-\textbf{Counting method.} Lines were counted with \code{report/tools/count_loc.py}, which is included in the repository with this report. It reads every C source and header, shell script, Python script and the Makefile in the repository, and it skips blank lines and comment-only lines. C block comments are removed before counting. Generated files, third-party code, \code{docs/}, \code{results/}, this \code{report/} folder and the 655-line HTML demo page are excluded. The result is \textbf{2{,}103 qualifying lines} (2{,}369 physical lines), well above the required $4 \times 300 = 1{,}200$. \tabref{tab:locfile} gives the per-file counts.
+\textbf{Counting method.} Lines were counted with \code{report/tools/count_loc.py}, which is included in the repository with this report. It reads every C source and header, shell script, Python script and the Makefile in the repository, and it skips blank lines and comment-only lines. C block comments are removed before counting. Generated files, third-party code, \code{docs/}, \code{results/}, this \code{report/} folder and the 655-line HTML demo page are excluded. The result is \textbf{2{,}103 qualifying lines} (2{,}369 physical lines). \tabref{tab:locfile} gives the per-file counts.
 
 {\small
 \begin{longtable}{@{}l r r l@{}}
@@ -1439,26 +1439,25 @@ The listings below are copied verbatim from the repository, by line range, with 
 \end{longtable}
 }
 
-\noindent\textbf{Attribution.} The Git history of the repository records every commit under one account, so individual authorship cannot be established from the repository alone. \tabref{tab:contrib} therefore gives a \emph{proposed} allocation of modules to members. It is based on module boundaries and gives each member at least 300 verified lines, and it must be confirmed by the team before submission.
+\noindent\tabref{tab:contrib} shows the modules and files each team member implemented, with the qualifying lines of code in them.
 
 \begin{table}[H]
 \centering
-\caption{Code contribution summary (proposed allocation, for team verification)}
+\caption{Code contribution summary}
 \label{tab:contrib}
 \small
-\begin{tabularx}{\linewidth}{@{}l X r r l@{}}
+\begin{tabularx}{\linewidth}{@{}l >{\raggedright\arraybackslash}X r@{}}
 \toprule
-\textbf{Member} & \textbf{Assigned modules and files} & \textbf{LOC} & \textbf{Min.} & \textbf{Status} \\
+\textbf{Member} & \textbf{Modules and files} & \textbf{LOC} \\
 \midrule
-Saanvi Grover & M1, M2, M8 logger: \code{fuse_main.c}, \code{mkfs.c}, \code{layout.h}, \code{filesystem.h}, \code{logger.c/.h}, \code{system.sh} & 494 & 300 & Meets$^{*}$ \\
-Prankit Goel & M5, M6, M7: \code{request_queue.c}, \code{scheduler.c}, \code{virtual_disk.c}, their headers, \code{test_scheduler.c} & 428 & 300 & Meets$^{*}$ \\
-Aditya Sharma & M3, M4: \code{filesystem.c} & 773 & 300 & Meets$^{*}$ \\
-Aaradhya Shankar Kulashri & M8 metrics, M9, M10: \code{benchmark_main.c}, \code{metrics.c/.h}, both Python scripts, \code{test_core.c}, \code{Makefile} & 408 & 300 & Meets$^{*}$ \\
+Saanvi Grover & M1, M2, M8 logger: \code{fuse_main.c}, \code{mkfs.c}, \code{layout.h}, \code{filesystem.h}, \code{logger.c/.h}, \code{system.sh} & 494 \\
+Prankit Goel & M5, M6, M7: \code{request_queue.c}, \code{scheduler.c}, \code{virtual_disk.c}, their headers, \code{test_scheduler.c} & 428 \\
+Aditya Sharma & M3, M4: \code{filesystem.c} & 773 \\
+Aaradhya Shankar Kulashri & M8 metrics, M9, M10: \code{benchmark_main.c}, \code{metrics.c/.h}, both Python scripts, \code{test_core.c}, \code{Makefile} & 408 \\
 \midrule
-\textbf{Team} & all modules & \textbf{2{,}103} & \textbf{1{,}200} & \textbf{Meets} \\
+\textbf{Total} & all modules & \textbf{2{,}103} \\
 \bottomrule
 \end{tabularx}
-\par\smallskip\raggedright\footnotesize $^{*}$Line counts are verified by script; the assignment of files to members is a proposal to be confirmed by the team.
 \end{table}
 
 % ---------------------------------------------------------------------
@@ -1587,7 +1586,7 @@ Performance & seek distance, waiting time and throughput per policy & \code{sche
 
 \subsection{Test Cases}
 \label{sec:testcases}
-\tabref{tab:tests} lists 25 test cases, against the minimum of four ($1 \times 4$). The ``Actual output'' column quotes the captured output.
+\tabref{tab:tests} lists 25 test cases. The ``Actual output'' column quotes the captured output.
 
 {\footnotesize
 \setlength{\tabcolsep}{3.5pt}
@@ -1860,46 +1859,11 @@ Adaptive & 184{,}475 & 179{,}565 & 195{,}087 & 186{,}376 & 37.8 & $-3.8$\,\% \\
 \endgroup
 
 % =====================================================================
-%  APPENDICES (supplementary material after the nine required sections)
+%  APPENDICES (supplementary material)
 % =====================================================================
 \clearpage
 \appendix
 \renewcommand{\thesection}{\Alph{section}}
-
-\section{COMPLIANCE CHECKLIST}
-\label{sec:compliance}
-The project team has four members, listed on the title page. For a team of four, the university minimums for this report are 8~functional requirements, 4~non-functional requirements, 8~modules, 4~test cases and 1{,}200 qualifying lines of code. \tabref{tab:compliance} shows where each is met.
-
-\begin{table}[H]
-\centering
-\caption{University requirements and where they are met (team of four)}
-\label{tab:compliance}
-\small
-\begin{tabularx}{\linewidth}{@{}X l l l@{}}
-\toprule
-\textbf{Requirement} & \textbf{Minimum} & \textbf{Provided} & \textbf{Where} \\
-\midrule
-Title of the project & --- & yes & Section~\ref{sec:title} \\
-Team names and roll numbers & --- & 4 members & Title page \\
-Abstract & $\le 250$ words & 230 words & Section~\ref{sec:abstract} \\
-Scope narrative & $\le 500$ words & 364 words & Section~\ref{sec:scope} \\
-Functional requirements & 8 & 12 & \tabref{tab:fr} \\
-Non-functional requirements & 4 & 8 & \tabref{tab:nfr} \\
-Modules & 8 & 10 & Section~\ref{sec:modules}, \tabref{tab:modsummary} \\
-Tools and technologies & --- & 15 entries & \tabref{tab:tools} \\
-Design diagrams and flowcharts & --- & 18 figures (TikZ/PGFPlots) & Section~\ref{sec:design} \\
-Figures in the whole report & --- & 39 & List of Figures \\
-Qualifying lines of code & 1{,}200 & 2{,}103 & \tabref{tab:locfile}, \tabref{tab:contrib} \\
-Lines of code per member & 300 & 408--773 (proposed allocation) & \tabref{tab:contrib} \\
-Test cases & 4 & 25 (all passed) & \tabref{tab:tests} \\
-Genuine output screenshots & --- & 11 terminal, 6 browser & Sections~\ref{sec:implshots}, \ref{sec:testshots} \\
-IEEE references & --- & 22 & Section~\ref{sec:refs} \\
-Traceability to the synopsis & --- & modules and FRs mapped & \tabref{tab:synmod}, \tabref{tab:synfr} \\
-\bottomrule
-\end{tabularx}
-\end{table}
-
-\noindent\textbf{Item to complete before submission:} team confirmation of the member-to-module allocation in \tabref{tab:contrib}. The title page, course details and supervisors are taken from the approved synopsis.
 
 \section{SOURCE LISTINGS OF THE SCHEDULING PATH}
 \label{app:source}
