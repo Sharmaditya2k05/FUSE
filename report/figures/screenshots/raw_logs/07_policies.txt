@@ -1,0 +1,19 @@
+student@ubuntu:~/FUSE$ cat workload.sh
+for i in 1 2 3 4; do head -c 262144 /dev/urandom > mnt/w$i.bin & done; wait
+for i in 1 2 3 4; do cat mnt/w$i.bin > /dev/null & done; wait
+rm mnt/w*.bin
+
+student@ubuntu:~/FUSE$ for p in fcfs sstf scan adaptive; do for t in 1 2 3; do ... ; done; done
+policy=fcfs      trial=1  4927 requests, total seek 199289 blocks
+policy=fcfs      trial=2  4927 requests, total seek 195909 blocks
+policy=fcfs      trial=3  4927 requests, total seek 186121 blocks
+policy=sstf      trial=1  4927 requests, total seek 117041 blocks
+policy=sstf      trial=2  4927 requests, total seek 112565 blocks
+policy=sstf      trial=3  4927 requests, total seek 118935 blocks
+policy=scan      trial=1  4927 requests, total seek 126521 blocks
+policy=scan      trial=2  4927 requests, total seek 134431 blocks
+policy=scan      trial=3  4927 requests, total seek 136659 blocks
+policy=adaptive  trial=1  4927 requests, total seek 184475 blocks
+policy=adaptive  trial=2  4927 requests, total seek 179565 blocks
+policy=adaptive  trial=3  4927 requests, total seek 195087 blocks
+

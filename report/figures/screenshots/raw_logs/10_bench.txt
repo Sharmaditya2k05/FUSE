@@ -1,0 +1,27 @@
+student@ubuntu:~/FUSE$ ./schedfs-bench --all
+Wrote benchmark.csv (measured scheduler replay; no artificial results).
+Use scripts/plot_results.py to generate graphs.
+
+student@ubuntu:~/FUSE$ awk -F, '{printf "%-11s %-9s %10s %12s %12s %13s\n", $1,$2,$3,$5,$6,$10}' benchmark.csv
+workload    policy    total_seek average_wait_ms maximum_wait_ms throughput_rps
+sequential  fcfs              50     0.112635     0.161976     44184.980
+sequential  sstf              43     0.102348     0.165167     45077.533
+sequential  scan              43     0.101206     0.154941     47899.602
+sequential  adaptive          50     0.112540     0.161970     44185.469
+random      fcfs             631     0.632521     1.190687      5252.184
+random      sstf             295     0.264811     0.628950     10589.406
+random      scan             229     0.193812     0.453958     13231.264
+random      adaptive         295     0.371026     0.629085     10586.059
+clustered   fcfs              58     0.106215     0.165608     37294.348
+clustered   sstf              58     0.105727     0.164716     37455.388
+clustered   scan             164     0.287521     0.376852     17547.070
+clustered   adaptive          58     0.109257     0.169888     36459.473
+mixed       fcfs             736     0.537896     1.245874      6944.208
+mixed       sstf             237     0.190065     0.510452     18595.153
+mixed       scan             229     0.162019     0.488446     19313.697
+mixed       adaptive         209     0.163968     0.448374     20776.356
+concurrent  fcfs           27402    18.923330    46.985566       291.052
+concurrent  sstf            4029     1.354655     6.216377      1946.360
+concurrent  scan            4053     1.372670     6.264569      1934.980
+concurrent  adaptive        4523     2.215624     7.205132      1737.371
+

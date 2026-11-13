@@ -1,0 +1,22 @@
+student@ubuntu:~/FUSE$ ./mkfs.schedfs disk.img 16M
+Formatted disk.img: 4096 blocks, 256 inodes, data starts at block 10
+
+student@ubuntu:~/FUSE$ ./mkfs.schedfs disk.img 16M
+open (remove an old image explicitly before formatting): File exists
+
+student@ubuntu:~/FUSE$ ./mkfs.schedfs other.img 10K
+size must be a positive multiple of 4096 (M/MiB/G/GiB accepted)
+
+student@ubuntu:~/FUSE$ ./mkfs.schedfs tiny.img 64K
+size must be a positive multiple of 4096 (M/MiB/G/GiB accepted)
+
+student@ubuntu:~/FUSE$ ls -l disk.img
+-rw-r--r-- 1 student student 16777216 Nov 13 12:54 disk.img
+
+student@ubuntu:~/FUSE$ od -A d -t x4 -N 64 disk.img
+0000000 53465331 00000001 00001000 00001000
+0000016 00000ff5 00000100 000000ff 00000001
+0000032 00000001 00000002 00000008 0000000a
+0000048 00000001 00000000 00000000 00000000
+0000064
+

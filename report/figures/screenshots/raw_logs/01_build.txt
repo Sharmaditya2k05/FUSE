@@ -1,0 +1,16 @@
+student@ubuntu:~/FUSE$ gcc --version | head -1
+gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
+
+student@ubuntu:~/FUSE$ pkg-config --modversion fuse3
+3.14.0
+
+student@ubuntu:~/FUSE$ make
+cc -Iinclude -D_FILE_OFFSET_BITS=64 -D_DEFAULT_SOURCE -std=gnu11 -O2 -g -Wall -Wextra -Wpedantic -Wshadow -Wconversion -I/usr/include/fuse3  -o schedfs src/fuse/fuse_main.c src/utils/logger.c src/sched/scheduler.c src/sync/request_queue.c src/bench/metrics.c src/storage/virtual_disk.c src/fs/filesystem.c -pthread -lfuse3 -lpthread  -lm
+cc -Iinclude -D_FILE_OFFSET_BITS=64 -D_DEFAULT_SOURCE -std=gnu11 -O2 -g -Wall -Wextra -Wpedantic -Wshadow -Wconversion -o mkfs.schedfs mkfs/mkfs.c
+cc -Iinclude -D_FILE_OFFSET_BITS=64 -D_DEFAULT_SOURCE -std=gnu11 -O2 -g -Wall -Wextra -Wpedantic -Wshadow -Wconversion -o schedfs-bench src/bench/benchmark_main.c src/sched/scheduler.c -lm
+
+student@ubuntu:~/FUSE$ ls -l schedfs mkfs.schedfs schedfs-bench
+-rwxrwxr-x 1 student student  29552 Nov 13 12:49 mkfs.schedfs
+-rwxrwxr-x 1 student student 144032 Nov 13 12:49 schedfs
+-rwxrwxr-x 1 student student  36392 Nov 13 12:49 schedfs-bench
+

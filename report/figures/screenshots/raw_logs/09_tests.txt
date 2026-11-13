@@ -1,0 +1,27 @@
+student@ubuntu:~/FUSE$ make test
+cc -Iinclude -D_FILE_OFFSET_BITS=64 -D_DEFAULT_SOURCE -std=gnu11 -O2 -g -Wall -Wextra -Wpedantic -Wshadow -Wconversion -o tests/test_scheduler tests/test_scheduler.c src/sched/scheduler.c -lm
+cc -Iinclude -D_FILE_OFFSET_BITS=64 -D_DEFAULT_SOURCE -std=gnu11 -O2 -g -Wall -Wextra -Wpedantic -Wshadow -Wconversion -o tests/test_core tests/test_core.c src/utils/logger.c src/sched/scheduler.c src/sync/request_queue.c src/bench/metrics.c src/storage/virtual_disk.c src/fs/filesystem.c -pthread -lm
+./tests/test_scheduler
+scheduler tests passed
+rm -f tests/core.img
+./mkfs.schedfs tests/core.img 16M
+Formatted tests/core.img: 4096 blocks, 256 inodes, data starts at block 10
+./tests/test_core tests/core.img
+2026-11-13T12:49:57.937 [INFO] mounted image: 4096 blocks, scheduler=sstf
+2026-11-13T12:49:57.949 [INFO] unmounted image: 657 requests, total seek 4573 blocks
+2026-11-13T12:49:57.950 [INFO] mounted image: 4096 blocks, scheduler=adaptive
+2026-11-13T12:49:57.963 [INFO] unmounted image: 409 requests, total seek 1843 blocks
+core persistence and concurrency tests passed
+rm -f tests/core.img
+./tests/system.sh
+Formatted /tmp/tmp.QRYIZXhMer/disk.img: 4096 blocks, 256 inodes, data starts at block 10
+SchedFS: 4096 blocks x 4096 bytes, 256 inodes, scheduler=fcfs
+Ignoring invalid max threads value 4294967295 > max (100000).
+SchedFS: 4096 blocks x 4096 bytes, 256 inodes, scheduler=sstf
+Ignoring invalid max threads value 4294967295 > max (100000).
+SchedFS: 4096 blocks x 4096 bytes, 256 inodes, scheduler=scan
+Ignoring invalid max threads value 4294967295 > max (100000).
+SchedFS: 4096 blocks x 4096 bytes, 256 inodes, scheduler=adaptive
+Ignoring invalid max threads value 4294967295 > max (100000).
+FUSE system tests passed
+

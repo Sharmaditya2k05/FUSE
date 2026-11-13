@@ -1,0 +1,27 @@
+student@ubuntu:~/FUSE$ truncate -s 8192 mnt/project/copy.txt && stat -c '%n %s bytes' mnt/project/copy.txt
+mnt/project/copy.txt 8192 bytes
+
+student@ubuntu:~/FUSE$ mv mnt/project/copy.txt mnt/project/result.txt && ls mnt/project
+big.bin
+demo.txt
+result.txt
+
+student@ubuntu:~/FUSE$ df -h mnt
+Filesystem      Size  Used Avail Use% Mounted on
+schedfs          16M  120K   16M   1% /home/student/FUSE/mnt
+
+student@ubuntu:~/FUSE$ rmdir mnt/project
+rmdir: failed to remove 'mnt/project': Directory not empty
+
+student@ubuntu:~/FUSE$ mv mnt/project/demo.txt mnt/project/result.txt
+mv: cannot overwrite 'mnt/project/result.txt': File exists
+
+student@ubuntu:~/FUSE$ touch mnt/$(printf 'n%.0s' {1..70})
+touch: cannot touch 'mnt/nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn': File name too long
+
+student@ubuntu:~/FUSE$ cat mnt/project/missing.txt
+cat: mnt/project/missing.txt: No such file or directory
+
+student@ubuntu:~/FUSE$ rm mnt/project/result.txt mnt/project/big.bin && ls mnt/project
+demo.txt
+
