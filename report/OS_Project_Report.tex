@@ -222,6 +222,7 @@
 
 % =====================================================================
 \section{TITLE OF THE PROJECT}
+\label{sec:title}
 % =====================================================================
 \begin{center}
 \fontsize{13.9}{18}\selectfont\bfseries \projecttitle
@@ -250,35 +251,14 @@ Interactive demo & \url{https://sharmaditya2k05.github.io/FUSE/} \\
 \end{table}
 
 % =====================================================================
-\section{DETAILS OF TEAM}
-% =====================================================================
-The project was carried out by a team of four students. \tabref{tab:team} lists the members in the order used on the title page.
-
-\begin{table}[H]
-\centering
-\caption{Team members}
-\label{tab:team}
-\begin{tabular}{@{}c l c@{}}
-\toprule
-\textbf{S. No.} & \textbf{Student Name} & \textbf{Roll Number} \\
-\midrule
-1 & Saanvi Grover & 2408030010 \\
-2 & Prankit Goel & 2408030011 \\
-3 & Aditya Sharma & 2408030019 \\
-4 & Aaradhya Shankar Kulashri & 2408030026 \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\noindent With a team size of four, the university minimums for this report are 8~functional requirements, 4~non-functional requirements, 8~modules, 4~test cases and 1{,}200 qualifying lines of code. Section~\ref{sec:compliance} summarises how each is met.
-
-% =====================================================================
 \section{ABSTRACT OF THE PROJECT}
+\label{sec:abstract}
 % =====================================================================
 Operating-systems courses treat file systems and disk scheduling as separate topics, so students rarely see a scheduling policy act on the I/O stream of a real file system. SchedFS joins the two. It is a mountable Linux file system implemented in C11 on the FUSE~3 interface. Its data lives in a single image file with a superblock, a free-block bitmap, 256 fixed-size inodes and 4~KiB data blocks reached through direct and single-indirect pointers. Every block read or write issued by the file system becomes a request in a bounded producer--consumer queue protected by a mutex and two condition variables. A single dispatcher thread selects the next request with a policy chosen at mount time---first-come first-served (FCFS), shortest seek time first (SSTF), SCAN, or an age-aware Adaptive policy---and only then calls \code{pread} or \code{pwrite} on the image, while each caller sleeps on its own condition variable until its request completes. The system also records seek distance and waiting time, and includes a trace-replay benchmark and a web visualisation. On the classic textbook trace the scheduler reproduces head movements of 640, 236 and 236 blocks for FCFS, SSTF and SCAN. On the mounted file system with four concurrent writers, SSTF reduced total head movement by 40\,\% compared with FCFS. Scheduler unit tests, core concurrency tests and mounted FUSE system tests all pass, and ThreadSanitizer reports no data races.
 
 % =====================================================================
 \section{SCOPE OF THE PROJECT}
+\label{sec:scope}
 % =====================================================================
 \textbf{Problem and objectives.} Disk-scheduling algorithms are normally studied on hand-written request lists \cite{silberschatz2018,tanenbaum2015}, detached from the software that produces disk traffic. The objective of SchedFS is to place these algorithms inside a working file system, so that ordinary commands such as \code{cp}, \code{cat} and \code{mkdir} generate the requests and the effect of each policy can be observed and measured. A second objective is to show correct multi-threaded synchronization: many FUSE worker threads produce requests concurrently, and a single consumer must serve them without races, lost wake-ups or deadlock.
 
@@ -1888,6 +1868,8 @@ Adaptive & 184{,}475 & 179{,}565 & 195{,}087 & 186{,}376 & 37.8 & $-3.8$\,\% \\
 
 \section{COMPLIANCE CHECKLIST}
 \label{sec:compliance}
+The project team has four members, listed on the title page. For a team of four, the university minimums for this report are 8~functional requirements, 4~non-functional requirements, 8~modules, 4~test cases and 1{,}200 qualifying lines of code. \tabref{tab:compliance} shows where each is met.
+
 \begin{table}[H]
 \centering
 \caption{University requirements and where they are met (team of four)}
@@ -1897,21 +1879,21 @@ Adaptive & 184{,}475 & 179{,}565 & 195{,}087 & 186{,}376 & 37.8 & $-3.8$\,\% \\
 \toprule
 \textbf{Requirement} & \textbf{Minimum} & \textbf{Provided} & \textbf{Where} \\
 \midrule
-Title of the project & --- & yes & Section 1 \\
-Team names and roll numbers & --- & 4 members & Section 2, \tabref{tab:team} \\
-Abstract & $\le 250$ words & 230 words & Section 3 \\
-Scope narrative & $\le 500$ words & 364 words & Section 4 \\
+Title of the project & --- & yes & Section~\ref{sec:title} \\
+Team names and roll numbers & --- & 4 members & Title page \\
+Abstract & $\le 250$ words & 230 words & Section~\ref{sec:abstract} \\
+Scope narrative & $\le 500$ words & 364 words & Section~\ref{sec:scope} \\
 Functional requirements & 8 & 12 & \tabref{tab:fr} \\
 Non-functional requirements & 4 & 8 & \tabref{tab:nfr} \\
-Modules & 8 & 10 & Section 4(c), \tabref{tab:modsummary} \\
+Modules & 8 & 10 & Section~\ref{sec:modules}, \tabref{tab:modsummary} \\
 Tools and technologies & --- & 15 entries & \tabref{tab:tools} \\
-Design diagrams and flowcharts & --- & 18 figures (TikZ/PGFPlots) & Section 6 \\
+Design diagrams and flowcharts & --- & 18 figures (TikZ/PGFPlots) & Section~\ref{sec:design} \\
 Figures in the whole report & --- & 39 & List of Figures \\
 Qualifying lines of code & 1{,}200 & 2{,}103 & \tabref{tab:locfile}, \tabref{tab:contrib} \\
 Lines of code per member & 300 & 408--773 (proposed allocation) & \tabref{tab:contrib} \\
 Test cases & 4 & 25 (all passed) & \tabref{tab:tests} \\
-Genuine output screenshots & --- & 11 terminal, 6 browser & Sections 7.5, 8.4 \\
-IEEE references & --- & 22 & Section 9 \\
+Genuine output screenshots & --- & 11 terminal, 6 browser & Sections~\ref{sec:implshots}, \ref{sec:testshots} \\
+IEEE references & --- & 22 & Section~\ref{sec:refs} \\
 Traceability to the synopsis & --- & modules and FRs mapped & \tabref{tab:synmod}, \tabref{tab:synfr} \\
 \bottomrule
 \end{tabularx}
