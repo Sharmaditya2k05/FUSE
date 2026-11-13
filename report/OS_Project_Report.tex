@@ -1,24 +1,29 @@
 % =====================================================================
-%  SchedFS: A FUSE File System with Integrated Disk Scheduling
-%  Operating Systems Project Report (Project Based Learning)
-%  Compile: pdflatex -> bibtex -> pdflatex -> pdflatex
+%  FUSE-Based File System with Custom Disk Scheduling and Synchronization
+%  (implementation name: SchedFS)
+%  Operating Systems Lab (24B11CS312) -- Project Report
+%  Formatting follows the approved project synopsis.
+%  Compile: pdflatex -> bibtex -> pdflatex -> pdflatex   (or run build.sh)
 % =====================================================================
-\documentclass[11pt,a4paper]{article}
+\documentclass[12pt,a4paper]{article}
 
 % ---------------------------------------------------------------------
-%  Details to complete before submission
+%  Course details (from the approved synopsis)
 % ---------------------------------------------------------------------
-\newcommand{\coursename}{Operating Systems Laboratory}
-\newcommand{\coursecode}{[COURSE CODE]}   % e.g. the code printed on your timetable
-\newcommand{\facultyname}{[Faculty Name]} % supervising faculty member
+\newcommand{\coursename}{Operating Systems Lab}
+\newcommand{\coursecode}{24B11CS312}
+\newcommand{\projecttitle}{FUSE-Based File System with Custom Disk Scheduling and Synchronization}
 
 % ---------------------------------------------------------------------
-%  Fonts, page geometry and layout (matched to the reference report)
+%  Fonts, page geometry and layout (matched to the synopsis)
 % ---------------------------------------------------------------------
 \usepackage[T1]{fontenc}
 \usepackage[utf8]{inputenc}
 \usepackage{lmodern}
 \usepackage[a4paper,margin=1in,footskip=0.42in]{geometry}
+\usepackage{setspace}
+\setstretch{1.345}  % 19.5 pt between baselines of 12 pt text, as in the synopsis
+\usepackage{etoolbox}
 \usepackage{microtype}
 \DisableLigatures[-]{encoding=T1, family=tt*}
 \usepackage{graphicx}
@@ -29,7 +34,7 @@
 \usepackage{tabularx}
 \usepackage{multirow}
 \usepackage{makecell}
-\usepackage[font={small,it},labelsep=period,justification=centering]{caption}
+\usepackage[font={small,stretch=1.0},labelfont=bf,labelsep=quad,justification=centering]{caption}
 \usepackage{subcaption}
 \usepackage{tikz}
 \usetikzlibrary{arrows.meta,positioning,shapes.geometric,shapes.misc,fit,calc,backgrounds,decorations.pathreplacing}
@@ -52,30 +57,42 @@
 \setlength{\parskip}{0pt}
 \renewcommand{\arraystretch}{1.18}
 \setlist{itemsep=2pt,topsep=4pt}
-\captionsetup[table]{position=top,skip=4pt}
-\captionsetup[figure]{skip=5pt}
-\captionsetup[lstlisting]{font={small,it},labelsep=period,skip=4pt}
+\captionsetup[table]{position=top,skip=5pt}
+\captionsetup[figure]{name=Fig.,skip=6pt}
+\captionsetup[lstlisting]{font={small,stretch=1.0},labelfont=bf,labelsep=quad,skip=4pt}
 
-% Page border on every page, as in the reference report
+% Tables, diagrams, listings and lists of contents use single spacing, as in the synopsis
+\AtBeginEnvironment{tabular}{\setstretch{1.0}}
+\AtBeginEnvironment{tabularx}{\setstretch{1.0}}
+\AtBeginEnvironment{longtable}{\setstretch{1.0}}
+\AtBeginEnvironment{tikzpicture}{\setstretch{1.0}}
+
+% Page border on every page, as in the synopsis (0.6 pt)
 \AddToShipoutPictureBG{\AtPageLowerLeft{%
   \begin{tikzpicture}
     \path (0,0);
-    \draw[line width=0.4pt] (33.67bp,33.8bp) rectangle (559.1bp,805.0bp);
+    \draw[line width=0.6pt] (33.7bp,33.7bp) rectangle (561.6bp,808.0bp);
   \end{tikzpicture}}}
 
-% Centred, upper-case section headings (14.4 pt bold), as in the reference
-\titleformat{\section}{\centering\Large\bfseries}{\thesection.}{0.55em}{}
-\titlespacing*{\section}{0pt}{16pt plus 4pt minus 2pt}{9pt plus 2pt}
-\titleformat{\subsection}{\large\bfseries}{\thesubsection}{0.7em}{}
-\titlespacing*{\subsection}{0pt}{12pt plus 3pt minus 2pt}{6pt plus 1pt}
-\titleformat{\subsubsection}{\normalsize\bfseries}{\thesubsubsection}{0.6em}{}
-\titlespacing*{\subsubsection}{0pt}{9pt plus 2pt minus 1pt}{4pt}
+% Left-aligned headings: 16 pt bold sections, 14 pt bold subsections (synopsis style)
+\titleformat{\section}{\fontsize{15.9}{19}\selectfont\bfseries}{\thesection.}{0.55em}{}
+\titlespacing*{\section}{0pt}{20pt plus 4pt minus 2pt}{10pt plus 2pt}
+\titleformat{\subsection}{\fontsize{13.9}{17}\selectfont\bfseries}{\thesubsection}{1em}{}
+\titlespacing*{\subsection}{0pt}{14pt plus 3pt minus 2pt}{6pt plus 1pt}
+\titleformat{\subsubsection}{\normalsize\bfseries}{\thesubsubsection}{0.8em}{}
+\titlespacing*{\subsubsection}{0pt}{10pt plus 2pt minus 1pt}{4pt}
 \setcounter{secnumdepth}{3}
 \setcounter{tocdepth}{2}
 \renewcommand{\cftsecleader}{\cftdotfill{\cftdotsep}}
-\renewcommand{\contentsname}{CONTENTS}
-\renewcommand{\listfigurename}{LIST OF FIGURES}
-\renewcommand{\listtablename}{LIST OF TABLES}
+\renewcommand{\cftsecaftersnum}{.}
+\setlength{\cftbeforesecskip}{6pt}
+\renewcommand{\contentsname}{Table of Contents}
+\renewcommand{\listfigurename}{List of Figures}
+\renewcommand{\listtablename}{List of Tables}
+\renewcommand{\cftfigpresnum}{Fig.~}
+\setlength{\cftfignumwidth}{3.6em}
+\renewcommand{\cfttabpresnum}{Table~}
+\setlength{\cfttabnumwidth}{4.2em}
 
 % ---------------------------------------------------------------------
 %  Code listings
@@ -110,9 +127,10 @@
 \lstset{style=cstyle}
 % keep each listing's caption on the same page as its first lines of code
 \let\origlstinputlisting\lstinputlisting
-\renewcommand{\lstinputlisting}[2][]{\needspace{9\baselineskip}\origlstinputlisting[#1]{#2}}
+\renewcommand{\lstinputlisting}[2][]{\needspace{8\baselineskip}\begingroup\setstretch{1.0}\origlstinputlisting[#1]{#2}\endgroup}
+\AtBeginEnvironment{lstlisting}{\setstretch{1.0}}
 \renewcommand{\lstlistingname}{Listing}
-\renewcommand{\lstlistlistingname}{LIST OF LISTINGS}
+\renewcommand{\lstlistlistingname}{List of Listings}
 
 % ---------------------------------------------------------------------
 %  Diagram styles
@@ -143,13 +161,14 @@
 }
 
 \DeclareRobustCommand{\code}[1]{\texttt{\detokenize{#1}}}
-\newcommand{\figref}[1]{Figure~\ref{#1}}
+\newcommand{\figref}[1]{Fig.~\ref{#1}}
 \newcommand{\tabref}[1]{Table~\ref{#1}}
 
 \begin{document}
 
 % =====================================================================
-%  TITLE PAGE  (layout reproduced from the reference report)
+%  TITLE PAGE  (layout reproduced from the approved synopsis;
+%  "PROJECT SYNOPSIS" becomes "PROJECT REPORT")
 % =====================================================================
 \begin{titlepage}
 \thispagestyle{empty}
@@ -157,24 +176,31 @@
     every node/.style={inner sep=0pt, outer sep=0pt}]
   \coordinate (O) at (current page.north west);
   \def\cx{297.6bp}
-  \node[anchor=north] at ($(O)+(\cx,-130bp)$) {\LARGE\bfseries PROJECT BASED LEARNING};
-  \node[anchor=north] at ($(O)+(\cx,-167bp)$) {\large on};
-  \node[anchor=north] at ($(O)+(\cx,-207bp)$) {\LARGE\bfseries SCHEDFS: A FUSE FILE SYSTEM};
-  \node[anchor=north] at ($(O)+(\cx,-236bp)$) {\Large\bfseries WITH INTEGRATED DISK SCHEDULING};
-  \node[anchor=north] at ($(O)+(\cx,-261bp)$) {\large\itshape FCFS, SSTF, SCAN and Adaptive Scheduling of Real File-System I/O};
-  \node[anchor=north] at ($(O)+(\cx,-305.4bp)$) {\includegraphics[width=118.7bp]{figures/jiit_logo_0.png}};
-  \node[anchor=north] at ($(O)+(\cx,-487bp)$) {\large\bfseries \coursename{} (\coursecode)};
-  \node[anchor=north west] at ($(O)+(72bp,-544bp)$) {\large\bfseries SUBMITTED BY};
-  \node[anchor=north west] at ($(O)+(72bp,-567bp)$) {Saanvi Grover};
-  \node[anchor=north west] at ($(O)+(224bp,-567bp)$) {2408030010};
-  \node[anchor=north west] at ($(O)+(72bp,-589bp)$) {Prankit Goel};
-  \node[anchor=north west] at ($(O)+(224bp,-589bp)$) {2408030011};
-  \node[anchor=north west] at ($(O)+(72bp,-611bp)$) {Aditya Sharma};
-  \node[anchor=north west] at ($(O)+(224bp,-611bp)$) {2408030019};
-  \node[anchor=north west] at ($(O)+(72bp,-633bp)$) {Aaradhya Shankar Kulashri};
-  \node[anchor=north west] at ($(O)+(224bp,-633bp)$) {2408030026};
-  \node[anchor=north west] at ($(O)+(379bp,-544bp)$) {\large\bfseries SUBMITTED TO};
-  \node[anchor=north west] at ($(O)+(379bp,-573bp)$) {\large \facultyname};
+  \node[anchor=north] at ($(O)+(\cx,-70bp)$) {\fontsize{17.9}{21}\selectfont\bfseries PROJECT REPORT};
+  \node[anchor=north] at ($(O)+(\cx,-102bp)$) {\fontsize{15.9}{19}\selectfont on};
+  \node[anchor=north] at ($(O)+(\cx,-135bp)$) {\fontsize{17.9}{21}\selectfont\bfseries FUSE-BASED FILE SYSTEM WITH CUSTOM};
+  \node[anchor=north] at ($(O)+(\cx,-166bp)$) {\fontsize{17.9}{21}\selectfont\bfseries DISK SCHEDULING AND};
+  \node[anchor=north] at ($(O)+(\cx,-197bp)$) {\fontsize{17.9}{21}\selectfont\bfseries SYNCHRONIZATION};
+  \node[anchor=north] at ($(O)+(\cx,-265.8bp)$) {\includegraphics[width=101.5bp]{figures/jiit_logo_0.png}};
+  \node[anchor=north] at ($(O)+(\cx,-455bp)$) {\bfseries \coursename{} (\coursecode)};
+  \node[anchor=north] at ($(O)+(\cx,-474bp)$) {Project Based Learning (PBL)};
+  \node[anchor=north] at ($(O)+(\cx,-493bp)$) {Odd Semester 2026, Academic Session 2026--27};
+  \node[anchor=north west] at ($(O)+(72bp,-566bp)$) {\bfseries SUBMITTED TO};
+  \node[anchor=north west] at ($(O)+(72bp,-591bp)$) {Dr. Tanvi Gautam};
+  \node[anchor=north west] at ($(O)+(72bp,-613bp)$) {Dr. Sayani Ghosal};
+  \node[anchor=north west] at ($(O)+(72bp,-634bp)$) {Mr. Umar Farooq};
+  \node[anchor=north west] at ($(O)+(345bp,-566bp)$) {\bfseries SUBMITTED BY};
+  \node[anchor=north west] at ($(O)+(345bp,-591bp)$) {Saanvi Grover};
+  \node[anchor=north west] at ($(O)+(465bp,-591bp)$) {2408030010};
+  \node[anchor=north west] at ($(O)+(345bp,-613bp)$) {Prankit Goel};
+  \node[anchor=north west] at ($(O)+(465bp,-613bp)$) {2408030011};
+  \node[anchor=north west] at ($(O)+(345bp,-634bp)$) {Aditya Sharma};
+  \node[anchor=north west] at ($(O)+(465bp,-634bp)$) {2408030019};
+  \node[anchor=north west] at ($(O)+(345bp,-655bp)$) {Aaradhya Kulashri};
+  \node[anchor=north west] at ($(O)+(465bp,-655bp)$) {2408030026};
+  \node[anchor=north] at ($(O)+(\cx,-725bp)$) {\fontsize{11.5}{14}\selectfont\bfseries DEPARTMENT OF COMPUTER SCIENCE ENGINEERING};
+  \node[anchor=north] at ($(O)+(\cx,-743bp)$) {\fontsize{11.5}{14}\selectfont\bfseries JAYPEE INSTITUTE OF INFORMATION TECHNOLOGY,};
+  \node[anchor=north] at ($(O)+(\cx,-761bp)$) {\fontsize{11.5}{14}\selectfont\bfseries NOIDA (U.P.) NOVEMBER 2026};
 \end{tikzpicture}
 \end{titlepage}
 
@@ -182,7 +208,7 @@
 %  FRONT MATTER
 % =====================================================================
 \pagenumbering{roman}
-\setcounter{page}{1}
+\setcounter{page}{2}  % the title page counts as page i, as in the synopsis
 \tableofcontents
 \clearpage
 \listoffigures
@@ -198,10 +224,10 @@
 \section{TITLE OF THE PROJECT}
 % =====================================================================
 \begin{center}
-\Large\bfseries SchedFS: A FUSE File System with Integrated Disk Scheduling
+\fontsize{13.9}{18}\selectfont\bfseries \projecttitle
 \end{center}
 
-\noindent SchedFS is a mountable Linux file system written in C11 on the FUSE~3 interface. Every block that the file system reads or writes is turned into a request, queued, and served in the order chosen by a disk-scheduling policy (FCFS, SSTF, SCAN or Adaptive) that is selected when the file system is mounted. The project therefore joins two chapters of an operating-systems course---\emph{file systems} and \emph{disk scheduling}---and adds a third, \emph{process synchronization}, because the queue between them is a bounded producer--consumer buffer shared by several threads.
+\noindent This is the title approved in the project synopsis. The implementation is called \textbf{SchedFS}: a mountable Linux file system written in C11 on the FUSE~3 interface. Every block that the file system reads or writes is turned into a request, queued, and served in the order chosen by a disk-scheduling policy (FCFS, SSTF, SCAN or Adaptive) that is selected when the file system is mounted. The project therefore joins two chapters of an operating-systems course---\emph{file systems} and \emph{disk scheduling}---and adds a third, \emph{process synchronization}, because the queue between them is a bounded producer--consumer buffer shared by several threads.
 
 \begin{table}[H]
 \centering
@@ -210,8 +236,11 @@
 \small
 \begin{tabularx}{\linewidth}{@{}>{\bfseries}p{3.6cm}X@{}}
 \toprule
-Project name & SchedFS (repository name \code{FUSE}) \\
-Course & \coursename{} (\coursecode) \\
+Project title & \projecttitle \\
+Implementation & SchedFS (repository name \code{FUSE}) \\
+Course & \coursename{} (\coursecode), Project Based Learning \\
+Session & Odd Semester 2026, Academic Session 2026--27 \\
+Supervisors & Dr. Tanvi Gautam, Dr. Sayani Ghosal, Mr. Umar Farooq \\
 Category & Systems programming: file systems, disk scheduling, synchronization \\
 Platform & Linux (Ubuntu 22.04/24.04), FUSE~3, GNU C11, POSIX threads \\
 Source repository & \url{https://github.com/Sharmaditya2k05/FUSE} \\
@@ -361,6 +390,59 @@ M10 & Test suite and build & \code{tests/}, \code{Makefile} & 200 \\
 
 \noindent\emph{Counting note.} LOC are non-blank, non-comment lines, including each module's header files (Section~\ref{sec:loc}). M3 and M4 are counted together because they share one source file and \code{include/filesystem.h}.
 
+\textbf{Traceability to the synopsis.} The approved synopsis planned ten modules and 26 functional requirements (FR-01 to FR-26). During implementation some planned modules were merged into fewer source files. For example, all four policies live in \code{scheduler.c} rather than one file per policy, and the superblock, inode and directory code share \code{filesystem.c}. Some functions also received different names: the synopsis's \code{pick_next()} became \code{scheduler_pick()}, and \code{blk_alloc} became \code{alloc_block}. \tabref{tab:synmod} maps each planned module to its implementation, and \tabref{tab:synfr} maps the synopsis requirements to the requirements of this report.
+
+\begin{table}[H]
+\centering
+\caption{Synopsis modules and where they are implemented}
+\label{tab:synmod}
+\small
+\begin{tabularx}{\linewidth}{@{}r l l X@{}}
+\toprule
+\textbf{No.} & \textbf{Synopsis module} & \textbf{Report module} & \textbf{Implemented in (main functions)} \\
+\midrule
+1 & FUSE interface & M2 & \code{fuse_main.c}: \code{op_getattr}, \code{op_read}, \code{op_write}, \ldots \\
+2 & Superblock & M1, M3 & \code{mkfs.c}: \code{main}; \code{filesystem.c}: \code{sfs_mount_image}, \code{sync_sb} \\
+3 & Inodes & M3, M4 & \code{filesystem.c}: \code{inode_alloc}, \code{inode_read}, \code{inode_write}, \code{bmap} \\
+4 & Directories & M3 & \code{filesystem.c}: \code{resolve}, \code{dir_find}, \code{dir_add}, \code{dir_remove} \\
+5 & Virtual disk & M7 & \code{virtual_disk.c}: \code{vdisk_open}, \code{vdisk_read}, \code{vdisk_write} \\
+6 & Block allocation & M4 & \code{filesystem.c}: \code{alloc_block}, \code{free_block}, \code{free_inode_blocks} \\
+7 & Request queue & M5 & \code{request_queue.c}: \code{rq_submit}, \code{rq_take}, \code{request_wait} \\
+8 & Disk scheduling & M6 & \code{scheduler.c}: \code{scheduler_pick} \\
+9 & Synchronization & M5, M7 (locks in M3, M4) & dispatcher thread in \code{virtual_disk.c}; mutexes and rwlocks in \code{filesystem.c} \\
+10 & Benchmarking & M8, M9 & \code{benchmark_main.c}, \code{metrics.c}, \code{scripts/} \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\begin{table}[H]
+\centering
+\caption{Synopsis functional requirements and the corresponding requirements in this report}
+\label{tab:synfr}
+\small
+\begin{tabularx}{\linewidth}{@{}l l X@{}}
+\toprule
+\textbf{Synopsis} & \textbf{This report} & \textbf{Note} \\
+\midrule
+FR-01 Mounting & FR2 & \\
+FR-02 Initialisation & FR1 & formatting by \code{mkfs.schedfs} \\
+FR-03, FR-05, FR-06 Create, read, write & FR3 & \\
+FR-04 File opening & FR3 & existence and file type are checked; access-mode bits are not enforced \\
+FR-07 File deletion & FR5 & \\
+FR-08 to FR-10 Directories & FR4 & \\
+FR-11 Path resolution & FR3, FR4 & \code{resolve()} \\
+FR-12 Inode management & FR3, FR6 & \\
+FR-13, FR-14 Block allocation and release & FR3, FR5 & module M4 \\
+FR-15 Virtual disk I/O & FR1, FR9 & \\
+FR-16, FR-17, FR-24 Requests, queue, producer--consumer & FR7 & \\
+FR-18 to FR-21 FCFS, SSTF, SCAN, Adaptive & FR8 & \\
+FR-22, FR-23 Concurrent I/O, synchronization & FR7, NFR2, NFR3 & \\
+FR-25 Logging & FR10 & mount summaries, allocations (verbose) and errors are logged; individual scheduling decisions are not \\
+FR-26 Metrics & FR10, FR11 & \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
 \newcommand{\moddesc}[8]{%
 \begin{center}
 \small
@@ -491,7 +573,7 @@ Every technology in \tabref{tab:tools} was confirmed in the source tree, the Mak
 C11 (GNU dialect, \code{-std=gnu11}) & Implementation language & All of \code{src/}, \code{mkfs/} and the C tests; \code{_Static_assert} checks the on-disk structure sizes; \code{stdatomic.h} provides the request-ID counter \cite{iso2011c}. \\
 GCC 13.3 & Compiler & Builds with \code{-O2 -g -Wall -Wextra -Wpedantic -Wshadow -Wconversion}; no warnings are produced (\figref{fig:term-build}). \\
 GNU Make & Build automation & Targets \code{all}, \code{test}, \code{bench}, \code{format}, \code{install}, \code{clean}. \\
-libfuse 3 (3.14.0) & User-space file-system API & \code{fuse_main()} and a \code{struct fuse_operations} table with 16 callbacks in \code{fuse_main.c}; found through \code{pkg-config fuse3} \cite{libfuse}. \\
+libfuse 3 (3.14.0) & User-space file-system API & \code{fuse_main()} and a \code{struct fuse_operations} table with 16 callbacks in \code{fuse_main.c}; found through \code{pkg-config fuse3} \cite{libfuse,libfuseapi}. \\
 Linux FUSE module, \code{fusermount3} & Kernel bridge and mount helper & Routes VFS calls on the mount point to the SchedFS process; \code{fusermount3 -u} unmounts \cite{kernelfuse}. \\
 POSIX threads & Concurrency and synchronization & \code{pthread_create}/\code{join} for the dispatcher; mutexes and condition variables for the queue and request completion; \code{pthread_rwlock_t} per inode \cite{posix2017}. \\
 POSIX/Linux system calls & Storage access & \code{open}, \code{pread}, \code{pwrite}, \code{ftruncate}, \code{fsync}, \code{close}, \code{realpath}; \code{clock_gettime(CLOCK_MONOTONIC)} for timing \cite{kerrisk2010}. \\
@@ -516,22 +598,22 @@ Docker (\code{ubuntu:24.04}) & Reproducible Linux test bed & All runs in this re
 
 \subsection{System Architecture}
 \label{sec:arch}
-SchedFS is a strictly layered system (\figref{fig:arch}). A system call on the mount point travels through the Linux VFS and the FUSE kernel module to a libfuse worker thread inside the SchedFS process. The FUSE adapter forwards it to the inode and directory layer, which breaks it into 4~KiB block operations. Each block operation becomes a request in the bounded queue. Only after the scheduler has chosen it does the dispatcher thread perform the real \code{pread} or \code{pwrite} on \code{disk.img}. After the mount-time bootstrap read of the superblock, no other code touches the image, so the scheduler controls every byte of disk I/O.
+SchedFS is a strictly layered system (\figref{fig:arch}). A system call on the mount point travels through the Linux VFS \cite{love2010,bovet2005} and the FUSE kernel module to a libfuse worker thread inside the SchedFS process. The FUSE adapter forwards it to the inode and directory layer, which breaks it into 4~KiB block operations. Each block operation becomes a request in the bounded queue. Only after the scheduler has chosen it does the dispatcher thread perform the real \code{pread} or \code{pwrite} on \code{disk.img}. After the mount-time bootstrap read of the superblock, no other code touches the image, so the scheduler controls every byte of disk I/O.
 
 \begin{figure}[H]
 \centering
-\begin{tikzpicture}[node distance=0.34cm]
+\begin{tikzpicture}[node distance=0.22cm, box/.append style={minimum height=0.7cm, inner sep=2pt}]
   \node[box=6.8cm] (app) {\textbf{Application processes}\\\footnotesize \code{cat}, \code{cp}, \code{mkdir}, \code{mv}, \code{rm}, \code{ls}};
   \node[box=6.8cm, below=of app] (vfs) {\textbf{Linux VFS} --- system calls on the mount point};
   \node[box=6.8cm, below=of vfs] (dev) {\textbf{FUSE kernel module} --- \code{/dev/fuse}};
-  \node[box=6.8cm, below=0.62cm of dev] (lib) {\textbf{libfuse 3 session loop} --- multi-threaded workers};
+  \node[box=6.8cm, below=0.45cm of dev] (lib) {\textbf{libfuse 3 session loop} --- multi-threaded workers};
   \node[box=6.8cm, below=of lib] (adp) {\textbf{FUSE adapter} --- \code{fuse_main.c}\\\footnotesize \code{op_getattr}, \code{op_read}, \code{op_write}, \code{op_mkdir}, \ldots};
   \node[box=6.8cm, below=of adp] (fsl) {\textbf{Path, directory and inode layer}\\\footnotesize \code{filesystem.c}};
   \node[box=6.8cm, below=of fsl] (map) {\textbf{Block mapping and allocation}\\\footnotesize \code{bmap}, free-block bitmap};
-  \node[hbox=6.8cm, below=0.78cm of map] (q) {\textbf{Bounded request queue} --- \code{request_queue.c}\\\footnotesize one mutex, \code{not_empty}, \code{not_full}; capacity 128};
+  \node[hbox=6.8cm, below=0.6cm of map] (q) {\textbf{Bounded request queue} --- \code{request_queue.c}\\\footnotesize one mutex, \code{not_empty}, \code{not_full}; capacity 128};
   \node[hbox=6.8cm, below=of q] (sch) {\textbf{Scheduler} --- \code{scheduler.c}\\\footnotesize FCFS $\cdot$ SSTF $\cdot$ SCAN $\cdot$ Adaptive};
   \node[hbox=6.8cm, below=of sch] (dsp) {\textbf{Dispatcher thread} --- \code{virtual_disk.c}};
-  \node[store, below=0.7cm of dsp] (img) {\code{disk.img}};
+  \node[store, below=0.5cm of dsp] (img) {\code{disk.img}};
   \node[box=3.1cm, right=0.75cm of dsp] (met) {\textbf{Metrics, logger}\\\footnotesize \code{filesystem.log}};
   \node[box=3.1cm, right=0.75cm of sch] (bench) {\textbf{\code{schedfs-bench}}\\\footnotesize trace replay};
   \node[box=3.1cm, right=2.2cm of img] (mk) {\textbf{\code{mkfs.schedfs}}\\\footnotesize formats the image};
@@ -690,7 +772,7 @@ A 16~MiB image holds 4{,}096 blocks of 4{,}096 bytes (\figref{fig:layout}). Bloc
 \end{tabular}
 \end{table}
 
-Each inode uses \emph{indexed allocation} with twelve direct pointers and one single-indirect pointer (\figref{fig:inode}). The indirect block holds 1{,}024 four-byte block numbers, so a file can have $12 + 1024 = 1036$ blocks, or about 4.05~MiB. A pointer of zero marks a hole: reading it returns zeros without allocating a block, which is how a sparse \code{truncate} works.
+Each inode uses \emph{indexed allocation} with twelve direct pointers and one single-indirect pointer (\figref{fig:inode}), following the classic UNIX inode design \cite{bach1986}. The indirect block holds 1{,}024 four-byte block numbers, so a file can have $12 + 1024 = 1036$ blocks, or about 4.05~MiB. A pointer of zero marks a hole: reading it returns zeros without allocating a block, which is how a sparse \code{truncate} works.
 
 \begin{figure}[H]
 \centering
@@ -966,7 +1048,7 @@ The dispatcher is the only consumer (\figref{fig:fc-dispatch}, left). After each
 
 \begin{figure}[H]
 \centering
-\begin{tikzpicture}[y=0.84cm,
+\begin{tikzpicture}[y=0.74cm,
     hd/.style={draw, fill=gray!15, rounded corners=1.5pt, font=\scriptsize\bfseries, minimum width=2.45cm, minimum height=0.6cm, align=center},
     msg/.style={->, semithick},
     m/.style={font=\scriptsize, fill=white, inner sep=1pt}]
@@ -1023,7 +1105,7 @@ M9 $\rightarrow$ files & \code{benchmark.csv} $\rightarrow$ \code{plot_results.p
 \label{sec:osconcepts}
 
 \subsubsection{Disk scheduling}
-Each policy answers one question: \emph{which pending request should the head serve next?} \cite{teorey1972,silberschatz2018} \tabref{tab:policies} summarises the four answers. \figref{fig:headplot} plots the head position over time for the textbook trace (head at block 53, queue 98, 183, 37, 122, 14, 124, 65, 67 on a 200-block disk), using the exact service orders checked by \code{tests/test_scheduler.c}.
+Each policy answers one question: \emph{which pending request should the head serve next?} \cite{teorey1972,silberschatz2018,stallings2018} \tabref{tab:policies} summarises the four answers. \figref{fig:headplot} plots the head position over time for the textbook trace (head at block 53, queue 98, 183, 37, 122, 14, 124, 65, 67 on a 200-block disk), using the exact service orders checked by \code{tests/test_scheduler.c}.
 
 \begin{table}[H]
 \centering
@@ -1075,7 +1157,7 @@ SSTF minimises seek distance but can starve a request far from the head. FCFS ne
 where $N$ is the number of blocks on the disk, $w_{\max}$ is the longest current wait in the queue, and the request with the lowest score is served. Both terms are normalised to $[0,1]$. With $\beta = 0$ the policy is exactly SSTF. As $\beta$ grows, waiting time increasingly outweighs distance---a form of \emph{ageing}, the standard remedy for starvation \cite{silberschatz2018}. The defaults are $\alpha = 0.7$ and $\beta = 0.3$.
 
 \subsubsection{Synchronization: bounded buffer, completion and reader--writer locks}
-SchedFS uses three synchronization patterns from the course \cite{arpaci2018,posix2017}:
+SchedFS uses three synchronization patterns from the course \cite{arpaci2018,posix2017,lewis1996,condwait}:
 \begin{enumerate}[leftmargin=1.6em]
   \item \textbf{Bounded buffer (producer--consumer).} Many FUSE worker threads produce requests and one dispatcher consumes them. A mutex protects the array; condition variables \code{not_full} and \code{not_empty} block producers and the consumer respectively (\figref{fig:fc-queue}).
   \item \textbf{Completion signalling.} Each request carries its own mutex, condition variable and \code{completed} flag. The caller waits in \code{while (!completed) pthread_cond_wait(...)}, so a spurious wake-up is harmless and a signal cannot be lost: the flag is set under the same mutex before the signal is sent.
@@ -1829,12 +1911,13 @@ Qualifying lines of code & 1{,}200 & 2{,}103 & \tabref{tab:locfile}, \tabref{tab
 Lines of code per member & 300 & 408--773 (proposed allocation) & \tabref{tab:contrib} \\
 Test cases & 4 & 25 (all passed) & \tabref{tab:tests} \\
 Genuine output screenshots & --- & 11 terminal, 6 browser & Sections 7.5, 8.4 \\
-IEEE references & --- & 15 & Section 9 \\
+IEEE references & --- & 22 & Section 9 \\
+Traceability to the synopsis & --- & modules and FRs mapped & \tabref{tab:synmod}, \tabref{tab:synfr} \\
 \bottomrule
 \end{tabularx}
 \end{table}
 
-\noindent\textbf{Items to complete before submission:} the course code and the name of the supervising faculty on the title page (the macros \texttt{\textbackslash coursecode} and \texttt{\textbackslash facultyname} at the top of the \code{.tex} file), and team confirmation of the member-to-module allocation in \tabref{tab:contrib}.
+\noindent\textbf{Item to complete before submission:} team confirmation of the member-to-module allocation in \tabref{tab:contrib}. The title page, course details and supervisors are taken from the approved synopsis.
 
 \section{SOURCE LISTINGS OF THE SCHEDULING PATH}
 \label{app:source}

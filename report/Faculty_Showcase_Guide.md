@@ -57,7 +57,7 @@ Then `cd FUSE`. (Run as `student`, not root — FUSE should not run as root and 
 - [ ] Run the whole demo once end to end (section 3).
 - [ ] Terminal font size large enough for a projector (Ctrl + mouse wheel).
 - [ ] Browser zoom ~125 % on the demo page; light theme (Theme button) is easier to read on a projector.
-- [ ] Fill in the course code and faculty name on the report's title page (top of `OS_Project_Report.tex`, then run `build.sh`).
+- [ ] Print the report (title page, course details and supervisors already match the approved synopsis).
 - [ ] Every member knows which part they present (section 5).
 
 ---
