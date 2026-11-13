@@ -1,4 +1,4 @@
-"""Report statistics used in the compliance checklist.
+"""Report statistics: word counts, figures, tables, listings and test cases.
 
 Usage: python check_report.py OS_Project_Report.tex
 Counts words in the Abstract and the Scope narrative (Section 4 text before
