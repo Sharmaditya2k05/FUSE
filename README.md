@@ -2,38 +2,36 @@
 
 # SchedFS
 
-**A mountable FUSE file system where every disk block goes through a real disk scheduler.**
+**A responsiveness-focused Linux file system with deadline-aware request scheduling.**
 
 ![C11](https://img.shields.io/badge/language-C11-00599C)
 ![FUSE 3](https://img.shields.io/badge/FUSE-3-4c1)
 ![pthreads](https://img.shields.io/badge/concurrency-pthreads-orange)
-![Policies](https://img.shields.io/badge/schedulers-FCFS%20%7C%20SSTF%20%7C%20SCAN%20%7C%20Adaptive-blueviolet)
-![License](https://img.shields.io/badge/license-see%20LICENSE-lightgrey)
+![Policies](https://img.shields.io/badge/schedulers-FCFS%20%7C%20SSTF%20%7C%20SCAN%20%7C%20LOOK%20%7C%20Adaptive%20%7C%20Deadline-blueviolet)
 
-**[▶ Live interactive demo](https://sharmaditya2k05.github.io/FUSE/)** · [Architecture](docs/architecture.md) · [Implementation](docs/implementation.md) · [Testing](docs/testing.md)
+**[▶ Interactive demo](https://sharmaditya2k05.github.io/FUSE/)** · [Scheduling](docs/scheduling.md) · [Evaluation](docs/evaluation.md) · [Locking](docs/locking.md) · [Demo script](docs/demo.md) · [Testing](docs/testing.md)
 
 </div>
 
 ---
 
-## The idea in one paragraph
+## Aim
 
-Operating-systems courses teach file systems and disk scheduling as two separate chapters. SchedFS joins them. It is a working Linux file system (you can `mkdir`, `cp`, `cat`, `mv`, `rm` inside it) whose blocks live in a single image file. Every block read or write made by the file system becomes a **request** in a shared, bounded queue. One **dispatcher thread** picks the next request using the policy chosen at mount time (**FCFS, SSTF, SCAN, or an age-aware Adaptive policy**) and only then touches the disk image. The result is that textbook scheduling algorithms run on real file-system traffic, and their effect on seek distance, waiting time and throughput can be measured.
+> Build a mountable Linux filesystem that keeps everyday file operations responsive during
+> competing bulk transfers by scheduling storage requests with deadlines, while
+> maintaining useful throughput for background work.
 
-## What it demonstrates
+SchedFS is for shared workspaces where large background transfers (backups, imports,
+large copies) and interactive file operations happen at the same time. If you are
+importing a large dataset, you still want to open a config file or save your notes
+without a long pause. SchedFS manages the order in which pending storage requests are
+served: it generally favours nearby requests for efficiency, and serves requests that
+have passed their service deadline first, so they do not keep getting overtaken.
 
-| OS concept | Where it shows up in SchedFS |
-|---|---|
-| File-system layout | Superblock, free-block bitmap, fixed 128-byte inodes, 64-byte directory entries |
-| Indexed allocation | 12 direct pointers + 1 single-indirect block (1036 blocks, about 4 MiB per file) |
-| Disk scheduling | FCFS, SSTF, SCAN and Adaptive, selectable with `--sched=` |
-| Producer–consumer | Bounded queue with `not_empty` / `not_full` condition variables |
-| Synchronization | Per-request completion condvar, inode read/write locks, a fixed lock order |
-| Starvation vs. efficiency | Adaptive policy trades seek distance against request age with `alpha` / `beta` |
-| User-space file systems | libfuse 3 callbacks mapped to the internal API |
-| Measurement | Monotonic-clock metrics, CSV export, Matplotlib graphs |
+The deliverable is the file system someone can mount and use. The benchmarks measure how
+well it serves that purpose and quantify the trade-off.
 
-## Architecture
+## How it works
 
 ```mermaid
 flowchart TB
@@ -45,173 +43,195 @@ flowchart TB
     F -- "vdisk_read / vdisk_write" --> G[("Bounded request queue<br/><code>src/sync/request_queue.c</code>")]
     P1["FUSE worker thread 1"] -. submits .-> G
     P2["FUSE worker thread N"] -. submits .-> G
-    G --> H{"Scheduler<br/>FCFS · SSTF · SCAN · Adaptive<br/><code>src/sched/scheduler.c</code>"}
+    G --> H{"Scheduler<br/>FCFS · SSTF · SCAN · LOOK · Adaptive · Deadline<br/><code>src/sched/scheduler.c</code>"}
     H --> I["Dispatcher thread<br/><code>src/storage/virtual_disk.c</code>"]
-    I -- "pread / pwrite" --> J[("disk.img")]
+    I -- "pread / pwrite" --> J[("disk image")]
     I -. "signal completion" .-> E
 ```
 
-After the mount-time bootstrap read, **only the dispatcher calls `pread`/`pwrite`**. A caller that submits a request sleeps on that request's own condition variable until the dispatcher signals it, so many file-system threads can be waiting while the scheduler reorders their requests.
+Every block the file system reads or writes becomes a request in one bounded queue. One
+dispatcher thread asks the scheduler which pending request to serve next, serves it, and
+wakes the caller. A small file operation is a chain of about 11 such requests (path
+lookup, inode, data).
 
-### On-disk layout (16 MiB image, 4 KiB blocks)
+**The deadline policy** (`--sched=deadline`): each request gets a service-start deadline,
+`arrival + 0 ms` for reads and `arrival + 2 ms` for writes (both configurable, tuned on a
+separate workload). If any pending request is overdue, the earliest deadline is served;
+otherwise the nearest block. So reads are served promptly in arrival order, writes are
+ordered by locality for a short window, and nothing is overtaken indefinitely. Deadline
+scheduling is an established approach (the Linux deadline I/O scheduler also gives reads
+and writes separate expiry times); SchedFS's contribution is implementing it, together
+with the textbook policies, in a working file system's request path and evaluating it on
+mounted workloads with the same instrumentation. It is not a real-time guarantee: the
+dispatcher is non-preemptive and a deadline only marks when a request becomes urgent.
+Details and the exact fairness conditions: [docs/scheduling.md](docs/scheduling.md).
 
-```
- block 0      1         2 ........ 9      10 ................................ 4095
-┌──────────┬─────────┬───────────────────┬──────────────────────────────────────┐
-│Superblock│ Bitmap  │ Inode table       │ Data blocks                          │
-│ magic,   │ 1 bit   │ 256 inodes ×      │ file contents, directory entries,    │
-│ counts,  │ per     │ 128 bytes         │ indirect pointer blocks              │
-│ offsets  │ block   │ (8 blocks)        │ (block 10 = root directory)          │
-└──────────┴─────────┴───────────────────┴──────────────────────────────────────┘
-```
-
-Each inode holds mode, link count, uid/gid, size, three timestamps, **12 direct block pointers** and **one indirect pointer** (to a block of 1024 more pointers).
-
-## Scheduling policies
-
-| Policy | Picks next | Strength | Weakness |
-|---|---|---|---|
-| **FCFS** | Oldest request | Fair, no starvation | Ignores head position, so long seeks |
-| **SSTF** | Closest block to the head | Low seek distance | Distant requests can starve |
-| **SCAN** | Closest block in the current direction, reversing at the disk edge | Bounded wait, sweeps evenly | Extra travel to the edge |
-| **Adaptive** | Lowest `alpha × distance/total_blocks − beta × wait/max_wait` | Tunable between SSTF and FCFS | Experimental, not best on every workload |
-
-With `beta = 0` the Adaptive policy behaves exactly like SSTF; raising `beta` makes older requests win more often. Ties are always broken by arrival time and then request ID, so every run is deterministic.
-
-### Worked example (the classic textbook trace)
-
-Head at block **53**, queue `98, 183, 37, 122, 14, 124, 65, 67`. This exact case is checked by `tests/test_scheduler.c`:
-
-| Policy | Service order | Total head movement |
-|---|---|---|
-| FCFS | 98 → 183 → 37 → 122 → 14 → 124 → 65 → 67 | **640** blocks |
-| SSTF | 65 → 67 → 37 → 14 → 98 → 122 → 124 → 183 | **236** blocks |
-| SCAN (moving toward 0) | 37 → 14 → *(0)* → 65 → 67 → 98 → 122 → 124 → 183 | **236** blocks |
-
-You can step through this trace, and the benchmark traces, in the **[interactive demo](https://sharmaditya2k05.github.io/FUSE/)** (source in [`docs/index.html`](docs/index.html)).
+| Policy | Picks next |
+|---|---|
+| `fcfs` | oldest request |
+| `sstf` | nearest block |
+| `scan` | nearest block in the current direction; travels to the disk edge before reversing |
+| `look` | like SCAN, but reverses at the last request |
+| `adaptive` | lowest `α·distance/N − β·wait/max_wait` (heuristic baseline, no starvation guarantee) |
+| `deadline` | overdue requests first (earliest deadline), else nearest block |
 
 ## Results
 
-`make bench` replays five fixed traces under every policy, so all policies see identical input. FCFS, SSTF and SCAN seek distances are exact and repeat on every run; Adaptive reads the real clock to measure waiting time, so its choices (and seek totals) can shift slightly between runs. Timing uses a small seek-delay model (10 µs + 2 µs per block moved) so that differences show up on SSDs and virtual machines.
+Measured on the mounted file system (3 runs × 10 s per cell, about 1,500 timed foreground
+operations per cell, fresh image per run, identical workload and seeds for every policy).
+Foreground = open + 4 KiB read or update + close of a small file every 20 ms; background =
+2 or 4 processes writing (or copying) 2 MiB files continuously. Two storage
+configurations: **model** adds a modeled seek time (100 µs + 0.25 µs per block moved) to
+real `O_DIRECT` I/O; **direct** is real `O_DIRECT` I/O on the WSL 2 virtual disk with no
+modeled delay. Full tables: [results/mounted/summary.md](results/mounted/summary.md);
+method: [docs/evaluation.md](docs/evaluation.md).
 
-![Summary of benchmark results](results/summary.png)
+**Foreground p99 latency (ms, lower is better) / background MB/s (higher is better)**
 
-**Total seek distance (blocks), lower is better:**
+| Workload | Config | FCFS | SSTF | Deadline | Deadline vs FCFS |
+|---|---|---|---|---|---|
+| 2 writers + small reads | model | 20.6 / 3.40 | 33.9 / 4.56 | **15.1** / 3.66 | p99 −27%, MB/s +8% |
+| 4 writers + small reads | model | 70.2 / 1.18 | 44.0 / 3.02 | **30.8** / 1.22 | p99 −56%, MB/s +3% |
+| 2 copiers + small reads | model | 40.3 / 0.89 | 45.9 / 1.90 | **26.9** / 0.81 | p99 −33%, MB/s −9% |
+| 2 writers + reads/updates | model | 25.2 / 3.06 | 41.5 / 4.66 | **18.9** / 3.42 | p99 −25%, MB/s +12% |
+| 2 writers + small updates | model | 22.7 / 3.10 | 40.7 / 4.61 | **19.1** / 3.55 | p99 −16%, MB/s +15% |
+| 2 writers + small reads | direct | 5.0 / 21.8 | 11.3 / 22.4 | **3.9** / 19.1 | p99 −22%, MB/s −13% |
+| 4 writers + small reads | direct | 8.7 / 18.6 | 20.0 / 18.8 | **4.2** / 17.8 | p99 −52%, MB/s −4% |
+| 2 copiers + small reads | direct | 10.6 / 9.5 | 25.1 / 9.9 | **7.4** / 9.0 | p99 −30%, MB/s −4% |
+| 2 writers + reads/updates | direct | 7.2 / 18.1 | 14.3 / 21.1 | 7.1 / 19.2 | no change |
+| 2 writers + small updates | direct | **5.8** / 19.5 | 13.7 / 20.4 | 7.2 / 20.7 | p99 **+24% (worse)** |
+| no background (overhead), p99 only | direct · model | 2.3 · 3.7 | 2.5 · 3.5 | 2.8 · 3.6 | within run-to-run variation |
 
-| Workload | FCFS | SSTF | SCAN | Adaptive |
-|---|---:|---:|---:|---:|
-| Sequential | 50 | 43 | 43 | 49 |
-| Random | 631 | 295 | **229** | 295 |
-| Clustered | 58 | 58 | 164 | 58 |
-| Mixed | 736 | 237 | **229** | 237 |
-| Concurrent | 27 402 | **4 029** | 4 053 | **4 029** |
-
-**Average waiting time (ms), lower is better:**
-
-| Workload | FCFS | SSTF | SCAN | Adaptive |
-|---|---:|---:|---:|---:|
-| Mixed | 8.42 | 6.08 | 8.80 | **5.08** |
-| Concurrent | 32.98 | 21.93 | **8.60** | 12.81 |
-
-**What the numbers say**
-
-- On the concurrent trace, FCFS moves the head **6.8× farther** than SSTF (27 402 vs 4 029 blocks).
-- SCAN cuts average waiting time on the concurrent trace by **74 %** compared with FCFS, and by 61 % compared with SSTF, because it never leaves requests stranded behind the head.
-- On clustered requests SCAN is the *worst*: it travels to the disk edge even though every request is nearby. No single policy wins everywhere, which is the motivation for the Adaptive policy.
-
-<details>
-<summary>All graphs</summary>
+**Answer to the project question.** Compared with SchedFS's own FCFS and SSTF policies on
+identical workloads, the deadline policy lowers the 99th-percentile latency of small
+foreground *reads* while background processes write or copy large files: by 22–56%
+against FCFS and 30–79% against SSTF in these runs. The cost: compared with SSTF it gives
+up 20–60% of background throughput on the modeled-seek disk (SSTF keeps the head near the
+bulk transfer); compared with FCFS, background throughput is within −13% to +15%. It does
+not help foreground *updates* on the real `O_DIRECT` configuration (p99 24% worse than
+FCFS), and on the modeled disk with four writers LOOK did slightly better than it
+(p99 28.8 ms, 1.91 MB/s). Under no background load all policies except SCAN behave the
+same. All measurements come from one Windows 11 + WSL 2 machine; "model" is a model of a
+disk, not a disk.
 
 | | |
 |---|---|
-| ![Total seek](results/total_seek.png) | ![Average seek](results/average_seek.png) |
-| ![Average wait](results/average_wait_ms.png) | ![Maximum wait](results/maximum_wait_ms.png) |
-| ![Throughput](results/throughput_rps.png) | ![Seek vs wait](results/seek_vs_wait.png) |
+| ![model](results/mounted/model_latency_throughput.png) | ![direct](results/mounted/direct_latency_throughput.png) |
+| ![trade-off](results/mounted/model_tradeoff.png) | ![CDF](results/mounted/model_bg2_read_cdf.png) |
 
-</details>
+The deterministic simulator (`make bench`, [results/sim_static.png](results/sim_static.png),
+[results/sim_dynamic.png](results/sim_dynamic.png)) shows the same mechanisms with a
+simulated clock: e.g. a distant read amid saturated nearby work waits up to 395 ms under
+SSTF and Adaptive, about 2 ms under FCFS, and is served at once under the deadline policy.
+Its numbers are modeled, not measured.
+
+## What is measured and what is modeled
+
+| | Measured | Modeled |
+|---|---|---|
+| Mounted experiments (`scripts/experiments.py`) | end-to-end latency of each file operation, background bytes/s, per-request queue wait, service time, queue depth (trace) | "movement" (block distance); in the `model` configuration also the service time (100 µs + 0.25 µs per block moved) |
+| Simulation (`schedfs-bench`) | nothing | everything: arrivals, service times, waits (deterministic, simulated clock) |
+
+Reduced modeled movement is never presented as an equivalent real-world speed-up. The
+`direct` configuration has no modeled delay: requests reach the WSL 2 virtual disk with
+`O_DIRECT`. No physical hard disk was measured.
 
 ## Quick start
 
-Ubuntu 22.04 or 24.04 is recommended (WSL 2 works for build and benchmarks).
+Ubuntu 22.04/24.04 or WSL 2 with FUSE (or the container in [`docker/`](docker/Dockerfile)):
 
 ```sh
-sudo apt update
-sudo apt install -y build-essential pkg-config libfuse3-dev fuse3 python3-pandas python3-matplotlib
-```
-
-Build, format an image and mount it:
-
-```sh
+sudo apt install -y build-essential pkg-config libfuse3-dev fuse3 python3 python3-matplotlib
 make
-./mkfs.schedfs disk.img 16M
+./mkfs.schedfs disk.img 64M
 mkdir -p mnt
-./schedfs disk.img mnt --sched=sstf
+./schedfs disk.img mnt --sched=deadline
 ```
 
-Use it like any other directory, from another terminal:
+Use it like any directory, then unmount:
 
 ```sh
 mkdir mnt/project
-echo 'Operating Systems' > mnt/project/demo.txt
-cat mnt/project/demo.txt
-cp mnt/project/demo.txt mnt/project/copy.txt
-stat mnt/project/copy.txt
-truncate -s 8192 mnt/project/copy.txt
-mv mnt/project/copy.txt mnt/project/result.txt
-rm mnt/project/demo.txt mnt/project/result.txt
-rmdir mnt/project
+echo 'Operating Systems' > mnt/project/notes.txt
+cat mnt/project/notes.txt
 fusermount3 -u mnt
 ```
 
-Other policies:
+Options: `--sched=fcfs|sstf|scan|look|adaptive|deadline`, `--read-deadline-ms=N`,
+`--write-deadline-ms=N`, `--alpha=N --beta=N`, `--direct-io`, `--model-base-us=N
+--model-us-per-block=N`, `--queue=N`, `--trace=FILE`, `--verbose`, `-f` (foreground). Do not
+run it as root; the formatter refuses to overwrite an existing image.
+
+## Demo and experiments
 
 ```sh
-./schedfs disk.img mnt --sched=fcfs
-./schedfs disk.img mnt --sched=scan
-./schedfs disk.img mnt --sched=adaptive --alpha=0.7 --beta=0.3
+scripts/demo.sh                                   # 5-minute demo (docs/demo.md)
+scripts/run_mounted.sh OUT "--sched=deadline --direct-io" "--duration 10 --bg 2"
+python3 scripts/analyze_run.py OUT                # one run: latency percentiles, throughput, queue
+python3 scripts/experiments.py matrix results/mounted/matrix   # full evaluation (about 50 min)
+python3 scripts/report_results.py results/mounted              # tables and charts
+make bench && python3 scripts/plot_results.py    # deterministic simulation (results/sim_*.png)
 ```
 
-Add `-f` to keep FUSE in the foreground and `--verbose` for DEBUG logging to `filesystem.log`. The formatter refuses to overwrite an existing image, and FUSE should not be run as root.
+Raw data for every run (foreground samples, background progress, summaries, run
+metadata) is in `results/mounted/`; see [docs/evaluation.md](docs/evaluation.md).
 
-## Benchmarks and tests
+## Tests
 
 ```sh
-make bench                       # writes benchmark.csv
-python3 scripts/plot_results.py  # writes results/*.png
-make test                        # unit, core and mounted FUSE tests
+make unit       # scheduler (simulated clock), core, and regression tests
+make test       # the same plus real FUSE mounts under all six policies
+make tsan       # core and regression tests under ThreadSanitizer
+scripts/check_old_defects.sh   # shows each fixed defect failing on the original code
 ```
 
-| Test | What it checks |
-|---|---|
-| `tests/test_scheduler.c` | Textbook head-53 trace: exact service order and head movement for FCFS, SSTF, SCAN |
-| `tests/test_core.c` | Create/write/read/truncate, sparse reads, 4 threads writing 64 KiB each concurrently, and persistence across unmount and remount under a different policy |
-| `tests/system.sh` | Formats a fresh image, mounts it under **each** policy, and runs `mkdir`, write, `cmp`, `truncate`, `mv`, `rm`, `rmdir`, unmount |
+[docs/testing.md](docs/testing.md) lists what each test covers.
 
-See [docs/testing.md](docs/testing.md) for AddressSanitizer and Valgrind runs.
+## Review findings and fixes
+
+| | Finding | Result |
+|---|---|---|
+| A | SCAN movement differed between the benchmark (edge travel, 236) and mounted metrics (208) | One movement model (`scheduler_advance`) used everywhere; SCAN (236) and LOOK (208) are separate policies; checked through the real dispatcher |
+| B | Shrinking a file inside a block left the discarded bytes | Fixed: the tail of the partial block is zeroed; tested for partial blocks, exact boundaries, sparse extension, writes past the end, remount |
+| C | Adaptive's age term is bounded, so distant requests can starve | Confirmed (0 picks in 10,000 decisions); Adaptive kept as a documented heuristic baseline without a guarantee |
+| D | unlink without the inode lock; other races | Confirmed and fixed: inode reuse during reads/writes, duplicate names from concurrent create, rename into own subtree; metadata write ordering fixed defensively; lock order and inode lifetime documented ([locking.md](docs/locking.md)) |
+| E | Benchmark claims | The benchmark is now a labelled deterministic simulation; its "concurrent" trace is renamed "interleaved"; mounted experiments are separate and measured |
+
+## OS topics
+
+File systems and indexed allocation (`filesystem.c`), disk scheduling (`scheduler.c`),
+processes and threads (FUSE workers, the dispatcher, daemon `fork()`), producer-consumer
+queues (`request_queue.c`), mutexes, condition variables and reader-writer locks,
+starvation and fairness (SSTF/Adaptive starvation, deadlines), deadlock avoidance (lock
+order), and performance measurement (traces, percentiles, repetitions). Mapping:
+[docs/demo.md](docs/demo.md#4-mapping-to-the-os-topics).
 
 ## Project structure
 
 ```
 include/          on-disk format and module interfaces
-src/fs/           inodes, directories, path lookup, block allocation
+src/fs/           inodes, directories, path lookup, block allocation, locking
 src/sync/         request lifecycle and the bounded producer-consumer queue
-src/sched/        FCFS, SSTF, SCAN and Adaptive selection
-src/storage/      image-file block device and the dispatcher thread
+src/sched/        the six policies, the movement model, the simulator
+src/storage/      image-file block device, dispatcher, modeled service time, trace
 src/fuse/         libfuse 3 adapter (the `schedfs` binary)
-src/bench/        trace replay benchmark (`schedfs-bench`) and metrics
+src/bench/        simulation benchmark (`schedfs-bench`), workload (`schedfs-workload`), metrics
 mkfs/             image formatter (`mkfs.schedfs`)
-scripts/          workload generator and graph plotting
-tests/            scheduler, core and mounted system tests
-docs/             architecture, implementation, testing, interactive demo
+scripts/          experiment driver, analysis, charts, demo, old-defect check
+tests/            scheduler, core, regression and mounted system tests
+results/          mounted raw data and summaries, simulation charts
+docs/             scheduling, locking, evaluation, demo, architecture, interactive page
+report/           project report and viva guide
+docker/           build and test environment
 ```
 
 ## Limitations
 
-SchedFS is a teaching file system, not a production one. It has no journal or crash recovery, no hard links, symlinks, extended attributes or ACL enforcement, and no block cache. Seek distance models block-number movement only; it does not represent SSD behaviour, rotational latency or device caches. `rename` refuses to replace an existing target. The image format is native little-endian and intended for Linux/x86-64.
-
-## Future work
-
-- Journaling and a consistency checker (`fsck`)
-- C-SCAN and LOOK / C-LOOK policies
-- A concurrent benchmark harness with controlled producer arrival barriers
-- A block cache, to study how caching changes the value of scheduling
+SchedFS is a teaching file system. It has no journal or crash recovery (a clean unmount
+is required), no hard links, symlinks or permission enforcement, files up to 1,036 blocks
+(about 4 MiB), and 256 inodes. Every operation goes through FUSE, so it is much slower
+than a kernel file system (see the host-file-system reference in the results). The
+deadline policy's benefit is for foreground reads during background writes; it does not
+help foreground writes as much, and it classifies requests only as reads or writes. All
+measurements are from one Windows 11 + WSL 2 machine; no physical hard disk was used, and
+the `model` configuration's seek time is a model.

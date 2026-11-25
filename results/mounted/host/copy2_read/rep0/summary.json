@@ -1,0 +1,28 @@
+{
+ "dir": "results/mounted/host/copy2_read/rep0",
+ "workload": {
+  "dir": "/var/tmp/tmpmm0w92ur",
+  "duration_s": 10.0,
+  "warmup_s": 1.0,
+  "bg": 2,
+  "bg_file_kb": 2048,
+  "bg_chunk_kb": 128,
+  "fg_interval_ms": 20.0,
+  "fg_file_kb": 64,
+  "fg_io_kb": 4,
+  "fg_op": "read",
+  "bg_mode": "copy",
+  "seed": 1001,
+  "t0_monotonic_ns": 8324496866847
+ },
+ "fg_latency_ms": {
+  "n": 500,
+  "mean": 0.020527512,
+  "p50": 0.017156,
+  "p95": 0.041105,
+  "p99": 0.048713,
+  "max": 0.060305
+ },
+ "fg_errors": 0,
+ "bg_mb_per_s": 744.0695296
+}

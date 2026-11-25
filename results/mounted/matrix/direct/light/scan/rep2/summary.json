@@ -1,0 +1,91 @@
+{
+ "dir": "results/mounted/matrix/direct/light/scan/rep2",
+ "workload": {
+  "dir": "/tmp/tmp.F6MWnhL5SL/mnt",
+  "duration_s": 10.0,
+  "warmup_s": 1.0,
+  "bg": 0,
+  "bg_file_kb": 2048,
+  "bg_chunk_kb": 128,
+  "fg_interval_ms": 20.0,
+  "fg_file_kb": 64,
+  "fg_io_kb": 4,
+  "fg_op": "read",
+  "bg_mode": "write",
+  "seed": 1003,
+  "t0_monotonic_ns": 6026887161252
+ },
+ "fg_latency_ms": {
+  "n": 500,
+  "mean": 1.7352897820000002,
+  "p50": 1.667933,
+  "p95": 2.347391,
+  "p99": 2.742165,
+  "max": 3.357761
+ },
+ "fg_errors": 0,
+ "bg_mb_per_s": 0.0,
+ "run": {
+  "schedfs_options": "--sched=scan --direct-io",
+  "workload_options": "--warmup 1 --fg-interval-ms 20 --fg-file-kb 64 --fg-io-kb 4 --bg-file-kb 2048 --bg-chunk-kb 128 --duration 10.0 --bg 0 --fg-op read --seed 1003",
+  "image_size": "64M",
+  "kernel": "6.18.58.1-microsoft-standard-WSL2",
+  "cpus": 20,
+  "date": "2026-11-25T15:59:10Z",
+  "commit": "unknown"
+ },
+ "schedfs": {
+  "policy": "scan",
+  "read_deadline_ms": "0.000",
+  "write_deadline_ms": "2.000",
+  "model_base_us": "0.000",
+  "model_us_per_block": "0.0000",
+  "direct_io": "1",
+  "queue_capacity": "128"
+ },
+ "block": {
+  "requests": 5750,
+  "requests_per_s": 575.0,
+  "modeled_movement_blocks": 49509431,
+  "wait_ms": {
+   "fg": {
+    "n": 5750,
+    "mean": 0.018583766086956523,
+    "p50": 0.014352,
+    "p95": 0.039561,
+    "p99": 0.057545,
+    "max": 0.183552
+   }
+  },
+  "service_ms": {
+   "n": 5750,
+   "mean": 0.09039498556521738,
+   "p50": 0.076516,
+   "p95": 0.197191,
+   "p99": 0.252876,
+   "max": 0.442023
+  },
+  "queue_depth": {
+   "mean": 1.0,
+   "max": 1,
+   "share_picked_with_2plus": 0.0
+  },
+  "fg_requests_finding_bg_waiting": 0.0,
+  "fg_requests_per_op": {
+   "n": 500,
+   "mean": 11.5,
+   "p50": 11,
+   "p95": 14,
+   "p99": 16,
+   "max": 19
+  },
+  "fg_op_share_in_block_layer": {
+   "n": 500,
+   "mean": 0.7204776537290765,
+   "p50": 0.7217975237245849,
+   "p95": 0.7635150802788973,
+   "p99": 0.785532010610738,
+   "max": 0.8154031504715866
+  }
+ }
+}

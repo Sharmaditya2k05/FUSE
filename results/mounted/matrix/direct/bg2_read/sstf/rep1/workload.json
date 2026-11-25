@@ -1,0 +1,1 @@
+{"dir": "/tmp/tmp.E8IgCDv3A9/mnt", "duration_s": 10.000, "warmup_s": 1.000, "bg": 2, "bg_file_kb": 2048, "bg_chunk_kb": 128, "fg_interval_ms": 20.000, "fg_file_kb": 64, "fg_io_kb": 4, "fg_op": "read", "bg_mode": "write", "seed": 1002, "t0_monotonic_ns": 5214443185314}

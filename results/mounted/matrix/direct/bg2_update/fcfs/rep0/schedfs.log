@@ -1,0 +1,4 @@
+2026-11-25T15:59:45.891 [INFO] mounted image: 16384 blocks, scheduler=fcfs
+2026-11-25T15:59:45.894 [INFO] unmounted image: 3 requests, total seek 3 blocks, mean wait 0.025 ms, max wait 0.035 ms, max queue depth 1
+2026-11-25T15:59:45.897 [INFO] mounted image: 16384 blocks, scheduler=fcfs
+2026-11-25T15:59:59.488 [INFO] unmounted image: 129998 requests, total seek 75224999 blocks, mean wait 0.091 ms, max wait 2.107 ms, max queue depth 3

@@ -1,0 +1,28 @@
+{
+ "dir": "results/mounted/host/light/rep1",
+ "workload": {
+  "dir": "/var/tmp/tmpw5j34t9r",
+  "duration_s": 10.0,
+  "warmup_s": 1.0,
+  "bg": 0,
+  "bg_file_kb": 2048,
+  "bg_chunk_kb": 128,
+  "fg_interval_ms": 20.0,
+  "fg_file_kb": 64,
+  "fg_io_kb": 4,
+  "fg_op": "read",
+  "bg_mode": "write",
+  "seed": 1002,
+  "t0_monotonic_ns": 8267181249277
+ },
+ "fg_latency_ms": {
+  "n": 500,
+  "mean": 0.03410078,
+  "p50": 0.034681,
+  "p95": 0.055256,
+  "p99": 0.063801,
+  "max": 0.078443
+ },
+ "fg_errors": 0,
+ "bg_mb_per_s": 0.0
+}

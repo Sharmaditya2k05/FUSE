@@ -55,7 +55,10 @@ int main(int argc, char **argv) {
         return 2;
     }
     sfs_t fs;
-    assert(sfs_mount_image(&fs, argv[1], SCHED_SSTF, .7, .3, false) == 0);
+    vdisk_options_t o;
+    vdisk_default_options(&o);
+    o.policy = SCHED_SSTF;
+    assert(sfs_mount_image(&fs, argv[1], &o, false) == 0);
     struct stat st;
     assert(sfs_getattr(&fs, "/", &st) == 0 && S_ISDIR(st.st_mode));
     assert(sfs_mkdir(&fs, "/docs", 0755) == 0);
@@ -82,7 +85,8 @@ int main(int argc, char **argv) {
         verify(&fs, i);
     }
     sfs_unmount_image(&fs);
-    assert(sfs_mount_image(&fs, argv[1], SCHED_ADAPTIVE, .7, .3, false) == 0);
+    o.policy = SCHED_ADAPTIVE;
+    assert(sfs_mount_image(&fs, argv[1], &o, false) == 0);
     assert(sfs_read(&fs, "/docs/hello", got, sizeof(got), 0) == (ssize_t)sizeof(got));
     assert(!memcmp(text, got, sizeof(text)));
     for (int i = 0; i < 4; ++i)

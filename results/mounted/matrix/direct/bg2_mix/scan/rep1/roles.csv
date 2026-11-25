@@ -1,0 +1,4 @@
+pid,role,worker
+1003,bg,0
+1004,bg,1
+1005,fg,0

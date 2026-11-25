@@ -1,0 +1,4 @@
+pid,role,worker
+401,bg,0
+402,bg,1
+403,fg,0

@@ -11,6 +11,7 @@
 #include <time.h>
 
 static atomic_uint_fast64_t next_id = 1;
+_Thread_local uint32_t sfs_request_client;
 
 int request_init(disk_request_t *r, rq_op_t op, uint32_t block, void *buffer) {
     memset(r, 0, sizeof(*r));
@@ -18,6 +19,7 @@ int request_init(disk_request_t *r, rq_op_t op, uint32_t block, void *buffer) {
     r->op = op;
     r->block = block;
     r->buffer = buffer;
+    r->client = sfs_request_client;
     r->producer = pthread_self();
     clock_gettime(CLOCK_MONOTONIC, &r->arrival);
     int e = pthread_mutex_init(&r->mutex, NULL);
@@ -85,6 +87,7 @@ disk_request_t *rq_take(request_queue_t *q, const scheduler_t *scheduler) {
     clock_gettime(CLOCK_MONOTONIC, &now);
     size_t index = scheduler_pick(scheduler, q->items, q->count, now);
     disk_request_t *r = q->items[index];
+    r->queue_depth = (uint32_t)q->count;
     memmove(&q->items[index], &q->items[index + 1], (q->count - index - 1) * sizeof(*q->items));
     --q->count;
     pthread_cond_signal(&q->not_full);

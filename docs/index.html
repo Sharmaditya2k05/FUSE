@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>SchedFS Scheduler Lab</title>
-<meta name="description" content="Interactive walkthrough of SchedFS: a FUSE file system whose block I/O is ordered by FCFS, SSTF, SCAN or an adaptive disk scheduler.">
+<meta name="description" content="Interactive walkthrough of SchedFS: a mountable FUSE file system that keeps small file operations responsive during bulk transfers by scheduling block requests with deadlines.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
@@ -22,6 +22,8 @@
   --sstf: #2a6fdb;
   --scan: #e08a1e;
   --adaptive: #1a9e77;
+  --look: #b56b00;
+  --deadline: #c2362b;
   --shadow: 0 1px 2px rgba(0,0,0,.04), 0 4px 16px rgba(0,0,0,.04);
   --sans: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
@@ -30,13 +32,13 @@
   :root:not([data-theme="light"]) {
     --bg: #131416; --surface: #1b1d20; --surface-2: #24272b; --ink: #ecebe7; --ink-2: #b4b1a9;
     --ink-3: #7f7c75; --line: #2f3236; --accent: #5b93ee; --fcfs: #a3a3a3; --sstf: #5b93ee;
-    --scan: #f0a03a; --adaptive: #34c495; --shadow: none;
+    --scan: #f0a03a; --adaptive: #34c495; --look: #d9973a; --deadline: #ef6a5c; --shadow: none;
   }
 }
 :root[data-theme="dark"] {
   --bg: #131416; --surface: #1b1d20; --surface-2: #24272b; --ink: #ecebe7; --ink-2: #b4b1a9;
   --ink-3: #7f7c75; --line: #2f3236; --accent: #5b93ee; --fcfs: #a3a3a3; --sstf: #5b93ee;
-  --scan: #f0a03a; --adaptive: #34c495; --shadow: none;
+  --scan: #f0a03a; --adaptive: #34c495; --look: #d9973a; --deadline: #ef6a5c; --shadow: none;
 }
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; }
@@ -92,7 +94,7 @@ section > .wrap > p.sub { color: var(--ink-2); max-width: 70ch; margin: 0 0 26px
 .ptrs i.ind { width: auto; padding: 0 8px; background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
 
 /* Lab */
-.controls { display: grid; grid-template-columns: 2fr 1fr 1fr 1fr; gap: 12px; margin-bottom: 14px; }
+.controls { display: grid; grid-template-columns: 2fr 1fr 1fr 1fr 1fr; gap: 12px; margin-bottom: 14px; }
 .field label { display: block; font: 600 11px var(--mono); text-transform: uppercase; letter-spacing: .06em; color: var(--ink-3); margin-bottom: 6px; }
 select, input[type=text], input[type=number] { width: 100%; font: inherit; font-size: 14px; padding: 8px 10px; border-radius: 9px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); }
 input[type=range] { width: 100%; accent-color: var(--adaptive); }
@@ -107,7 +109,7 @@ input[type=range] { width: 100%; accent-color: var(--adaptive); }
 .transport .progress { font: 600 13px var(--mono); color: var(--ink-2); margin-left: auto; }
 .speed { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--ink-2); }
 .speed input { width: 90px; accent-color: var(--ink); }
-.panels { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+.panels { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
 .panel { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 14px; box-shadow: var(--shadow); display: flex; flex-direction: column; min-width: 0; }
 .panel-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
 .panel-head h3 { margin: 0; font-size: 15px; display: flex; align-items: center; gap: 7px; }
@@ -183,13 +185,13 @@ footer { padding: 30px 0 50px; color: var(--ink-3); font-size: 13px; border-top:
 
 <div class="wrap hero">
   <p class="eyebrow">Operating Systems project · FUSE 3 · C11 · pthreads</p>
-  <h1>A file system where every block waits its <em>turn</em>.</h1>
-  <p class="lede">SchedFS is a mountable Linux file system. Each block it reads or writes becomes a request in a shared queue, and one dispatcher thread services those requests in the order chosen by a disk-scheduling policy: FCFS, SSTF, SCAN, or an age-aware Adaptive policy.</p>
+  <h1>Small files stay <em>quick</em> while big copies run.</h1>
+  <p class="lede">SchedFS is a mountable Linux file system for shared workspaces where large background transfers and everyday file operations happen at the same time. Every block it reads or writes becomes a request in one queue, and one dispatcher thread serves them in the order chosen by a disk-scheduling policy. The deadline policy serves overdue requests first and otherwise the nearest block, to keep small operations responsive while bulk copies keep running.</p>
   <div class="stats">
-    <div class="stat"><b>6.8×</b><span>more head travel under FCFS than SSTF on the concurrent trace</span></div>
-    <div class="stat"><b>−74%</b><span>average wait with SCAN compared with FCFS (concurrent trace)</span></div>
-    <div class="stat"><b>4</b><span>policies, chosen at mount time with <code>--sched=</code></span></div>
-    <div class="stat"><b>3</b><span>test layers: scheduler trace, core concurrency, mounted FUSE</span></div>
+    <div class="stat"><b>−22 to −56%</b><span>p99 latency of small reads during background writes, deadline vs FCFS (measured, mounted)</span></div>
+    <div class="stat"><b>−30 to −79%</b><span>the same against SSTF, which starves distant requests</span></div>
+    <div class="stat"><b>−13 to +15%</b><span>background throughput vs FCFS; vs SSTF it gives up 20–60% on the modeled-seek disk</span></div>
+    <div class="stat"><b>+24%</b><span>p99 of small <em>updates</em> vs FCFS on real O_DIRECT I/O: the case where it does not help</span></div>
   </div>
 </div>
 
@@ -233,19 +235,21 @@ footer { padding: 30px 0 50px; color: var(--ink-3); font-size: 13px; border-top:
 <section id="policies">
   <div class="wrap">
     <p class="eyebrow">02 · Policies</p>
-    <h2>Four ways to choose the next request</h2>
-    <p class="sub">All four share deterministic tie-breaking: earlier arrival first, then lower request ID. The same trace always produces the same service order.</p>
+    <h2>Six ways to choose the next request</h2>
+    <p class="sub">All six share deterministic tie-breaking: earlier arrival first, then lower request ID. The same trace always produces the same service order. FCFS, SSTF, SCAN and LOOK are the textbook algorithms; deadline scheduling is an established approach (the Linux deadline I/O scheduler also gives reads and writes separate expiry times).</p>
     <table class="pol">
       <thead><tr><th>Policy</th><th>Picks next</th><th>Strength</th><th>Weakness</th></tr></thead>
       <tbody>
         <tr><td><span class="dot" style="background:var(--fcfs)"></span> <b>FCFS</b></td><td>The oldest request</td><td>Fair, no starvation</td><td>Ignores where the head is</td></tr>
         <tr><td><span class="dot" style="background:var(--sstf)"></span> <b>SSTF</b></td><td>The block closest to the head</td><td>Short seeks</td><td>Far requests can starve</td></tr>
-        <tr><td><span class="dot" style="background:var(--scan)"></span> <b>SCAN</b></td><td>The closest block in the current direction, reversing at the disk edge</td><td>Even sweep, bounded wait</td><td>Extra trip to the edge</td></tr>
-        <tr><td><span class="dot" style="background:var(--adaptive)"></span> <b>Adaptive</b></td><td>The lowest score that combines distance and age</td><td>Tunable between SSTF and FCFS</td><td>Experimental</td></tr>
+        <tr><td><span class="dot" style="background:var(--scan)"></span> <b>SCAN</b></td><td>The closest block in the current direction; travels to the disk edge before reversing</td><td>Even sweep, bounded wait</td><td>Extra trip to the edge</td></tr>
+        <tr><td><span class="dot" style="background:var(--look)"></span> <b>LOOK</b></td><td>Same choice as SCAN, but reverses at the last request</td><td>No trip to the edge</td><td>Requests just behind the head wait a sweep</td></tr>
+        <tr><td><span class="dot" style="background:var(--adaptive)"></span> <b>Adaptive</b></td><td>The lowest score that combines distance and age</td><td>Tunable between SSTF and FCFS</td><td>No starvation guarantee: the age term is worth at most β</td></tr>
+        <tr><td><span class="dot" style="background:var(--deadline)"></span> <b>Deadline</b></td><td>Overdue requests first (earliest deadline), otherwise the closest block. Deadline = arrival + 0 ms for reads, + 2 ms for writes (defaults, tuned)</td><td>Reads are not overtaken by nearby writes; writes keep locality until their own deadline</td><td>Not a real-time guarantee; under overload it becomes earliest-deadline-first</td></tr>
       </tbody>
     </table>
-    <div class="formula">score = α · distance / total_blocks − β · wait / max_wait</div>
-    <p style="color:var(--ink-2);font-size:14px;margin:10px 0 0">With β = 0 it is exactly SSTF. Raising β lets requests that have waited longer jump the queue.</p>
+    <div class="formula">Adaptive: score = α · distance / total_blocks − β · wait / max_wait</div>
+    <p style="color:var(--ink-2);font-size:14px;margin:10px 0 0">With β = 0 Adaptive is exactly SSTF. Because the age term is divided by the oldest wait, it never exceeds β, so a request more than (β/α) × N blocks farther than nearby work is never chosen while nearby work keeps arriving.</p>
   </div>
 </section>
 
@@ -272,6 +276,10 @@ footer { padding: 30px 0 50px; color: var(--ink-3); font-size: 13px; border-top:
         <label for="beta">Adaptive <span style="text-transform:none">β</span> (age)</label>
         <div class="range-row"><input id="beta" type="range" min="0" max="1" step="0.05" value="0.3"><output id="betaOut">0.30</output></div>
       </div>
+      <div class="field">
+        <label for="dl">Deadline (ms)</label>
+        <div class="range-row"><input id="dl" type="range" min="0" max="2" step="0.05" value="0.3"><output id="dlOut">0.30</output></div>
+      </div>
     </div>
     <div class="trace-row">
       <input id="custom" type="text" aria-label="Block numbers" placeholder="Block numbers, e.g. 98 183 37 122 14 124 65 67">
@@ -285,54 +293,54 @@ footer { padding: 30px 0 50px; color: var(--ink-3); font-size: 13px; border-top:
       <span class="progress" id="progress">0 / 0 served</span>
     </div>
     <div class="panels" id="panels"></div>
-    <p class="legend-note">SCAN starts moving toward block 0, as in the benchmark. A dashed chip means the head travelled to the disk edge before reversing. The panel outlined in colour has the lowest total movement.</p>
+    <p class="legend-note">SCAN and LOOK start moving toward block 0, as in the benchmark. A dashed chip means the head travelled to the disk edge before reversing (SCAN only). The panel outlined in colour has the lowest total movement. The lab uses a simulated clock: request i arrives at i µs and each service takes 10 µs + 2 µs per block moved, so the Deadline slider (one deadline for all requests here, since the traces have no writes) decides when a waiting request becomes overdue. 0 ms makes it FCFS; a large value makes it SSTF.</p>
   </div>
 </section>
 
 <section id="results">
   <div class="wrap">
     <p class="eyebrow">04 · Measured results</p>
-    <h2>Benchmark: five traces, four policies</h2>
-    <p class="sub">From <code>benchmark.csv</code>, produced by <code>make bench</code>. Every policy replays the identical trace. FCFS, SSTF and SCAN seek distances are exact; Adaptive uses the measured clock, so its totals can shift between runs. Times use a seek-delay model of 10 µs plus 2 µs per block moved.</p>
+    <h2>Small files during big copies: six policies, measured</h2>
+    <p class="sub">Mounted SchedFS, fresh image per run, identical workload and seeds for every policy, 3 runs × 10 s per bar (about 1,500 timed operations). Foreground: open + 4 KiB read or update + close of a small file every 20 ms. Background: 2 or 4 processes writing or copying 2 MiB files. <b>direct</b> = real I/O with O_DIRECT (no modeled delay); <b>model</b> = the same plus a modeled seek time of 100 µs + 0.25 µs per block moved. From <code>results/mounted/summary.csv</code>.</p>
     <div class="tabs" role="tablist" id="metricTabs"></div>
     <div class="chart-card">
       <div class="chart-legend" id="chartLegend"></div>
-      <svg id="chart" viewBox="0 0 900 360" role="img" aria-label="Benchmark chart"></svg>
+      <svg id="chart" viewBox="0 0 900 360" role="img" aria-label="Measured results chart"></svg>
     </div>
     <div class="findings">
-      <div class="card finding"><b>FCFS loses badly under contention</b><p>On the concurrent trace it moves the head 27,402 blocks; SSTF and Adaptive need 4,029.</p></div>
-      <div class="card finding"><b>SCAN is the fairest</b><p>Lowest average and maximum wait on the concurrent trace, because nothing is left stranded behind the head.</p></div>
-      <div class="card finding"><b>No policy wins everywhere</b><p>On clustered requests SCAN is worst: it sweeps to the disk edge even though every request is nearby.</p></div>
+      <div class="card finding"><b>Small reads stay quick</b><p>p99 of small reads during background writes or copies: 22–56% lower than FCFS and 30–79% lower than SSTF.</p></div>
+      <div class="card finding"><b>The cost</b><p>Against SSTF, 20–60% less background throughput on the modeled-seek disk. Against FCFS, within −13% to +15%.</p></div>
+      <div class="card finding"><b>Where it does not win</b><p>Small updates on real O_DIRECT I/O: 24% worse p99 than FCFS. Four writers on the modeled disk: LOOK slightly better.</p></div>
     </div>
-    <p class="caveat">Traces are short (7 to 16 requests), so timing columns vary from run to run by a few milliseconds; seek distance for FCFS, SSTF and SCAN is the stable comparison. The lab above uses a modelled clock, so Adaptive there is repeatable. The mounted file system records the same metrics from real FUSE traffic.</p>
+    <p class="caveat">One Windows 11 + WSL 2 machine. The "model" configuration models a disk; it is not a physical hard disk. SCAN's bars are high on the model disk because every reversal pays the modeled trip to the disk edge. Method, tuning and full tables: <code>docs/evaluation.md</code>. The scheduler lab above is a separate, simulated clock.</p>
   </div>
 </section>
 
 <section id="run">
   <div class="wrap">
     <p class="eyebrow">05 · Run it</p>
-    <h2>Live demo in four commands</h2>
+    <h2>Try it</h2>
     <p class="sub">On Ubuntu 22.04 or 24.04 (or WSL 2) with <code>libfuse3-dev</code> and <code>fuse3</code> installed:</p>
-<pre class="term"><span class="c"># build, format a 16 MiB image, mount with SSTF</span>
+<pre class="term"><span class="c"># build, format a 64 MiB image, mount with the deadline policy</span>
 make
-./mkfs.schedfs disk.img 16M
-mkdir -p mnt &amp;&amp; ./schedfs disk.img mnt --sched=sstf
+./mkfs.schedfs disk.img 64M
+mkdir -p mnt &amp;&amp; ./schedfs disk.img mnt --sched=deadline
 
-<span class="c"># in a second terminal: it is a real directory</span>
+<span class="c"># it is a real directory</span>
 mkdir mnt/project
-echo 'Operating Systems' &gt; mnt/project/demo.txt
-cat mnt/project/demo.txt
-stat mnt/project/demo.txt
+echo 'Operating Systems' &gt; mnt/project/notes.txt
+cat mnt/project/notes.txt
 fusermount3 -u mnt
 
-<span class="c"># reproduce the numbers above and run every test</span>
-make bench &amp;&amp; python3 scripts/plot_results.py
-make test</pre>
+<span class="c"># the 5-minute demo, the tests, and the measurements above</span>
+scripts/demo.sh
+make test
+python3 scripts/experiments.py matrix results/mounted/matrix &amp;&amp; python3 scripts/report_results.py results/mounted</pre>
   </div>
 </section>
 
 <footer>
-  <div class="wrap">SchedFS is a teaching file system: no journal, no crash recovery, no cache. Built to make the trade-offs between disk-scheduling policies visible on real file-system traffic.</div>
+  <div class="wrap">SchedFS is a teaching file system: no journal, no crash recovery, no cache. It keeps small file operations responsive during bulk transfers by scheduling block requests with deadlines, and measures the trade-off.</div>
 </footer>
 
 <script>
@@ -355,7 +363,9 @@ make test</pre>
     { key: "fcfs", label: "FCFS", color: "--fcfs" },
     { key: "sstf", label: "SSTF", color: "--sstf" },
     { key: "scan", label: "SCAN", color: "--scan" },
-    { key: "adaptive", label: "Adaptive", color: "--adaptive" }
+    { key: "look", label: "LOOK", color: "--look" },
+    { key: "adaptive", label: "Adaptive", color: "--adaptive" },
+    { key: "deadline", label: "Deadline", color: "--deadline" }
   ];
   function cssVar(name) { return getComputedStyle(root).getPropertyValue(name).trim(); }
 
@@ -366,7 +376,7 @@ make test</pre>
     { key: "random", label: "Benchmark: random", disk: 4096, head: 53, blocks: [145, 12, 98, 176, 32, 67, 4] },
     { key: "clustered", label: "Benchmark: clustered", disk: 4096, head: 53, blocks: [90, 93, 96, 101, 104, 108, 111] },
     { key: "mixed", label: "Benchmark: mixed", disk: 4096, head: 53, blocks: [10, 11, 12, 145, 13, 14, 67, 15, 16, 176, 17] },
-    { key: "concurrent", label: "Benchmark: concurrent · 16 requests", disk: 4096, head: 53, blocks: [300, 12, 900, 13, 1500, 14, 2200, 15, 3010, 16, 44, 17, 1888, 18, 4000, 19] }
+    { key: "interleaved", label: "Benchmark: interleaved · 16 requests (fixed list, not live concurrency)", disk: 4096, head: 53, blocks: [300, 12, 900, 13, 1500, 14, 2200, 15, 3010, 16, 44, 17, 1888, 18, 4000, 19] }
   ];
 
   /* ---------- port of scheduler_pick() ---------- */
@@ -386,7 +396,19 @@ make test</pre>
       }
       return best;
     }
-    if (s.policy === "scan") {
+    if (s.policy === "deadline") {
+      /* overdue requests first (one shared deadline here, so the oldest), else nearest */
+      var due = -1;
+      for (i = 0; i < items.length; i++)
+        if (now - items[i].arrival >= s.deadline && (due < 0 || older(items[i], items[due]))) due = i;
+      if (due >= 0) return due;
+      for (i = 1; i < items.length; i++) {
+        var n1 = dist(s.head, items[i].block), n2 = dist(s.head, items[best].block);
+        if (n1 < n2 || (n1 === n2 && older(items[i], items[best]))) best = i;
+      }
+      return best;
+    }
+    if (s.policy === "scan" || s.policy === "look") {
       var found = false;
       for (i = 0; i < items.length; i++) {
         var ok = s.dir > 0 ? items[i].block >= s.head : items[i].block <= s.head;
@@ -415,16 +437,23 @@ make test</pre>
     return best;
   }
 
-  /* Replays a trace the way schedfs-bench does, with a modelled clock instead of a measured one. */
+  /* Replays a trace with a simulated clock (ms): request i arrives at i us, all are pending
+     before the first pick, and each service takes 10 us + 2 us per block moved.
+     Movement follows scheduler_advance(): SCAN pays the trip to the edge, LOOK does not. */
   function simulate(trace, policy, opts) {
-    var s = { policy: policy, disk: trace.disk, head: opts.head, dir: -1, alpha: opts.alpha, beta: opts.beta };
+    var s = { policy: policy, disk: trace.disk, head: opts.head, dir: -1, alpha: opts.alpha, beta: opts.beta, deadline: opts.deadline };
     var pending = trace.blocks.map(function (b, i) { return { id: i + 1, block: b, arrival: i * 0.001 }; });
-    var now = 0, total = 0, steps = [];
+    var now = trace.blocks.length * 0.001, total = 0, steps = [];
     while (pending.length) {
       var k = pick(s, pending, now);
       var next = pending[k].block, from = s.head, move = dist(from, next), edge = null;
-      if (policy === "scan" && s.dir < 0 && next > from) { edge = 0; move = from + next; s.dir = 1; }
-      else if (policy === "scan" && s.dir > 0 && next < from) { edge = trace.disk - 1; move = (trace.disk - 1 - from) + (trace.disk - 1 - next); s.dir = -1; }
+      if ((policy === "scan" || policy === "look") && s.dir < 0 && next > from) {
+        if (policy === "scan") { edge = 0; move = from + next; }
+        s.dir = 1;
+      } else if ((policy === "scan" || policy === "look") && s.dir > 0 && next < from) {
+        if (policy === "scan") { edge = trace.disk - 1; move = (trace.disk - 1 - from) + (trace.disk - 1 - next); }
+        s.dir = -1;
+      }
       total += move;
       steps.push({ from: from, to: next, edge: edge, move: move, total: total });
       s.head = next;
@@ -437,6 +466,7 @@ make test</pre>
   /* ---------- lab UI ---------- */
   var wlSel = document.getElementById("wl"), headIn = document.getElementById("head");
   var alphaIn = document.getElementById("alpha"), betaIn = document.getElementById("beta");
+  var dlIn = document.getElementById("dl");
   var customIn = document.getElementById("custom");
   TRACES.forEach(function (t) {
     var o = document.createElement("option"); o.value = t.key; o.textContent = t.label; wlSel.appendChild(o);
@@ -452,7 +482,7 @@ make test</pre>
   function recompute() {
     var t = currentTrace();
     var head = Math.max(0, Math.min(t.disk - 1, parseInt(headIn.value, 10) || 0));
-    var opts = { head: head, alpha: parseFloat(alphaIn.value), beta: parseFloat(betaIn.value) };
+    var opts = { head: head, alpha: parseFloat(alphaIn.value), beta: parseFloat(betaIn.value), deadline: parseFloat(dlIn.value) };
     POLICIES.forEach(function (p) { results[p.key] = simulate(t, p.key, opts); });
     results.head = head;
     buildPanels();
@@ -578,7 +608,7 @@ make test</pre>
   function restart() { playing = false; progress = 0; recompute(); }
   wlSel.addEventListener("change", function () { custom = null; headIn.value = currentTrace().head; restart(); });
   headIn.addEventListener("change", restart);
-  [alphaIn, betaIn].forEach(function (inp) {
+  [alphaIn, betaIn, dlIn].forEach(function (inp) {
     inp.addEventListener("input", function () {
       document.getElementById(inp.id + "Out").textContent = parseFloat(inp.value).toFixed(2);
       restart();
@@ -593,39 +623,93 @@ make test</pre>
   });
   customIn.addEventListener("keydown", function (e) { if (e.key === "Enter") document.getElementById("applyCustom").click(); });
 
-  /* ---------- benchmark chart ---------- */
+  /* ---------- measured results (results/mounted/summary.csv) ---------- */
   var CSV = [
-    "sequential,fcfs,50,6.250,7.414875,14.496000,512.821",
-    "sequential,sstf,43,5.375,5.758925,12.117500,609.617",
-    "sequential,scan,43,5.375,6.886688,13.109000,567.030",
-    "sequential,adaptive,49,6.125,1.809325,3.956800,1791.072",
-    "random,fcfs,631,90.143,1.660843,3.186800,1893.888",
-    "random,sstf,295,42.143,1.532271,3.044900,1811.313",
-    "random,scan,229,32.714,4.583000,9.617300,658.786",
-    "random,adaptive,295,42.143,4.137286,7.048200,657.209",
-    "clustered,fcfs,58,8.286,4.995471,11.512500,576.117",
-    "clustered,sstf,58,8.286,3.087829,7.167400,915.499",
-    "clustered,scan,164,23.429,5.567129,9.975300,657.320",
-    "clustered,adaptive,58,8.286,3.914143,7.406800,872.339",
-    "mixed,fcfs,736,66.909,8.418945,16.214500,635.857",
-    "mixed,sstf,237,21.545,6.081864,11.937300,883.066",
-    "mixed,scan,229,20.818,8.798018,16.693200,613.442",
-    "mixed,adaptive,237,21.545,5.076745,14.824500,648.249",
-    "concurrent,fcfs,27402,1712.625,32.976044,71.271500,192.566",
-    "concurrent,sstf,4029,251.813,21.925044,43.781300,344.487",
-    "concurrent,scan,4053,253.313,8.597594,20.879100,690.599",
-    "concurrent,adaptive,4029,251.813,12.814431,28.335800,513.848"
+    "direct,bg2_mix,adaptive,3.49,6.50,20.52,1.27",
+    "direct,bg2_mix,deadline,2.96,7.11,19.17,2.81",
+    "direct,bg2_mix,fcfs,3.95,7.20,18.10,5.55",
+    "direct,bg2_mix,look,4.11,8.46,21.62,2.48",
+    "direct,bg2_mix,scan,4.52,8.07,19.00,2.11",
+    "direct,bg2_mix,sstf,4.90,14.28,21.10,17.62",
+    "direct,bg2_read,adaptive,3.12,5.20,19.95,2.05",
+    "direct,bg2_read,deadline,2.37,3.89,19.05,1.59",
+    "direct,bg2_read,fcfs,2.87,4.98,21.84,1.86",
+    "direct,bg2_read,look,3.81,7.41,19.50,1.73",
+    "direct,bg2_read,scan,3.63,6.52,20.36,2.19",
+    "direct,bg2_read,sstf,3.59,11.29,22.44,10.32",
+    "direct,bg2_update,adaptive,3.80,6.88,18.35,4.12",
+    "direct,bg2_update,deadline,3.15,7.22,20.66,2.45",
+    "direct,bg2_update,fcfs,3.54,5.83,19.54,2.75",
+    "direct,bg2_update,look,4.54,7.97,18.42,3.45",
+    "direct,bg2_update,scan,4.46,7.96,19.01,3.91",
+    "direct,bg2_update,sstf,5.07,13.74,20.40,12.22",
+    "direct,bg4_read,adaptive,5.00,8.17,17.70,2.77",
+    "direct,bg4_read,deadline,2.31,4.22,17.80,5.49",
+    "direct,bg4_read,fcfs,4.89,8.73,18.59,2.53",
+    "direct,bg4_read,look,4.82,9.96,18.75,2.27",
+    "direct,bg4_read,scan,4.89,10.91,18.07,1.80",
+    "direct,bg4_read,sstf,4.54,19.95,18.81,22.04",
+    "direct,copy2_read,adaptive,7.50,11.91,8.03,1.17",
+    "direct,copy2_read,deadline,4.52,7.42,9.04,0.85",
+    "direct,copy2_read,fcfs,6.44,10.64,9.46,2.27",
+    "direct,copy2_read,look,8.08,15.51,8.77,2.67",
+    "direct,copy2_read,scan,7.62,14.76,9.11,2.02",
+    "direct,copy2_read,sstf,5.40,25.14,9.90,35.58",
+    "direct,light,adaptive,1.61,2.75,0.00,0.25",
+    "direct,light,deadline,1.58,2.78,0.00,0.34",
+    "direct,light,fcfs,1.44,2.27,0.00,0.19",
+    "direct,light,look,1.58,2.79,0.00,0.26",
+    "direct,light,scan,1.55,2.56,0.00,0.45",
+    "direct,light,sstf,1.55,2.52,0.00,0.19",
+    "model,bg2_mix,adaptive,14.69,24.14,3.13,1.95",
+    "model,bg2_mix,deadline,10.47,18.90,3.42,3.29",
+    "model,bg2_mix,fcfs,15.03,25.20,3.06,2.91",
+    "model,bg2_mix,look,12.47,26.25,3.53,2.66",
+    "model,bg2_mix,scan,64.16,91.94,0.22,10.08",
+    "model,bg2_mix,sstf,11.89,41.46,4.66,39.20",
+    "model,bg2_read,adaptive,12.83,21.03,3.45,1.60",
+    "model,bg2_read,deadline,8.50,15.14,3.66,1.53",
+    "model,bg2_read,fcfs,12.79,20.64,3.40,1.54",
+    "model,bg2_read,look,10.59,21.98,3.65,2.95",
+    "model,bg2_read,scan,54.81,88.13,0.22,9.71",
+    "model,bg2_read,sstf,9.53,33.85,4.56,28.89",
+    "model,bg2_update,adaptive,15.04,22.55,3.16,1.56",
+    "model,bg2_update,deadline,10.37,19.05,3.55,4.10",
+    "model,bg2_update,fcfs,15.16,22.73,3.10,2.32",
+    "model,bg2_update,look,12.32,25.70,3.58,5.59",
+    "model,bg2_update,scan,64.06,91.71,0.22,10.14",
+    "model,bg2_update,sstf,11.49,40.74,4.61,24.23",
+    "model,bg4_read,adaptive,24.94,59.74,1.32,4.09",
+    "model,bg4_read,deadline,14.30,30.76,1.22,4.72",
+    "model,bg4_read,fcfs,25.79,70.20,1.18,4.29",
+    "model,bg4_read,look,15.02,28.80,1.91,4.07",
+    "model,bg4_read,scan,58.01,81.87,0.41,10.95",
+    "model,bg4_read,sstf,13.12,44.01,3.02,55.33",
+    "model,copy2_read,adaptive,25.38,44.85,0.90,2.84",
+    "model,copy2_read,deadline,16.32,26.93,0.81,7.55",
+    "model,copy2_read,fcfs,24.54,40.34,0.89,3.40",
+    "model,copy2_read,look,16.93,39.46,1.36,3.70",
+    "model,copy2_read,scan,73.96,119.05,0.21,12.17",
+    "model,copy2_read,sstf,14.04,45.88,1.90,39.52",
+    "model,light,adaptive,2.50,3.53,0.00,0.36",
+    "model,light,deadline,2.55,3.64,0.00,0.28",
+    "model,light,fcfs,2.53,3.65,0.00,0.22",
+    "model,light,look,2.46,3.64,0.00,0.42",
+    "model,light,scan,27.22,36.65,0.00,0.33",
+    "model,light,sstf,2.44,3.49,0.00,0.82"
   ].map(function (l) {
     var c = l.split(",");
-    return { w: c[0], p: c[1], total_seek: +c[2], average_seek: +c[3], average_wait_ms: +c[4], maximum_wait_ms: +c[5], throughput_rps: +c[6] };
+    return { c: c[0], w: c[1], p: c[2], p50: +c[3], p99: +c[4], mbs: +c[5], fgmax: +c[6] };
   });
   var METRICS = [
-    { key: "total_seek", label: "Total seek", unit: "blocks", log: true, better: "lower" },
-    { key: "average_wait_ms", label: "Average wait", unit: "ms", log: false, better: "lower" },
-    { key: "maximum_wait_ms", label: "Maximum wait", unit: "ms", log: false, better: "lower" },
-    { key: "throughput_rps", label: "Throughput", unit: "requests/s", log: false, better: "higher" }
+    { key: "p99", config: "model", label: "p99 latency · model", unit: "ms", log: true, better: "lower" },
+    { key: "p99", config: "direct", label: "p99 latency · direct", unit: "ms", log: true, better: "lower" },
+    { key: "mbs", config: "model", label: "Background MB/s · model", unit: "MB/s", log: false, better: "higher" },
+    { key: "mbs", config: "direct", label: "Background MB/s · direct", unit: "MB/s", log: false, better: "higher" },
+    { key: "p50", config: "direct", label: "Median latency · direct", unit: "ms", log: false, better: "lower" }
   ];
-  var WL = ["sequential", "random", "clustered", "mixed", "concurrent"];
+  var WL = ["bg2_read", "bg4_read", "copy2_read", "bg2_mix", "bg2_update", "light"];
+  var WLABEL = { bg2_read: "2 writers + reads", bg4_read: "4 writers + reads", copy2_read: "2 copiers + reads", bg2_mix: "reads + updates", bg2_update: "2 writers + updates", light: "no background" };
   var metric = METRICS[0];
   var tabs = document.getElementById("metricTabs");
   METRICS.forEach(function (m, i) {
@@ -650,37 +734,38 @@ make test</pre>
     var svg = document.getElementById("chart");
     var W = 900, H = 360, L = 64, R = 12, T = 24, B = 44;
     var ink2 = cssVar("--ink-2"), ink3 = cssVar("--ink-3"), line = cssVar("--line");
-    var vals = CSV.map(function (r) { return r[metric.key]; });
-    var max = metric.log ? Math.pow(10, Math.ceil(Math.log10(Math.max.apply(null, vals)))) : niceMax(Math.max.apply(null, vals));
-    var minLog = 10;
+    var data = CSV.filter(function (r) { return r.c === metric.config && WL.indexOf(r.w) >= 0 && !(metric.key === "mbs" && r.w === "light"); });
+    var wls = WL.filter(function (w) { return !(metric.key === "mbs" && w === "light"); });
+    var vals = data.map(function (r) { return r[metric.key]; });
+    var lo = 1, max = metric.log ? Math.pow(10, Math.ceil(Math.log10(Math.max.apply(null, vals)))) : niceMax(Math.max.apply(null, vals));
     var y = metric.log
-      ? function (v) { return T + (H - T - B) * (1 - (Math.log10(Math.max(v, minLog)) - 1) / (Math.log10(max) - 1)); }
+      ? function (v) { return T + (H - T - B) * (1 - Math.log10(Math.max(v, lo)) / Math.log10(max)); }
       : function (v) { return T + (H - T - B) * (1 - v / max); };
-    var parts = [];
-    var ticks = [];
-    if (metric.log) for (var e = 1; Math.pow(10, e) <= max; e++) ticks.push(Math.pow(10, e));
+    var parts = [], ticks = [];
+    if (metric.log) for (var e = 0; Math.pow(10, e) <= max; e++) ticks.push(Math.pow(10, e));
     else for (var k = 0; k <= 5; k++) ticks.push(max * k / 5);
     ticks.forEach(function (tv) {
       var yy = y(tv).toFixed(1);
       parts.push('<line x1="' + L + '" x2="' + (W - R) + '" y1="' + yy + '" y2="' + yy + '" stroke="' + line + '"/>');
-      parts.push('<text x="' + (L - 8) + '" y="' + yy + '" dy="4" text-anchor="end" font-size="12" fill="' + ink3 + '">' + (tv >= 1000 ? (tv / 1000) + "k" : +tv.toFixed(1)) + "</text>");
+      parts.push('<text x="' + (L - 8) + '" y="' + yy + '" dy="4" text-anchor="end" font-size="12" fill="' + ink3 + '">' + (+tv.toFixed(1)) + "</text>");
     });
     parts.push('<text x="14" y="' + (T + (H - T - B) / 2) + '" font-size="12" fill="' + ink3 + '" transform="rotate(-90 14 ' + (T + (H - T - B) / 2) + ')" text-anchor="middle">' +
       metric.unit + (metric.log ? " (log)" : "") + " · " + metric.better + " is better</text>");
-    var gw = (W - L - R) / WL.length, bw = Math.min(30, (gw - 24) / 4);
-    WL.forEach(function (w, gi) {
-      var gx = L + gi * gw + (gw - bw * 4 - 6) / 2;
-      var rows = POLICIES.map(function (p) { return CSV.filter(function (r) { return r.w === w && r.p === p.key; })[0]; });
-      var bestVal = metric.better === "lower" ? Math.min.apply(null, rows.map(function (r) { return r[metric.key]; }))
-                                              : Math.max.apply(null, rows.map(function (r) { return r[metric.key]; }));
+    var n = POLICIES.length, gw = (W - L - R) / wls.length, bw = Math.min(18, (gw - 16) / n);
+    wls.forEach(function (w, gi) {
+      var gx = L + gi * gw + (gw - bw * n - (n - 1) * 2) / 2;
+      var rows = POLICIES.map(function (p) { return data.filter(function (r) { return r.w === w && r.p === p.key; })[0]; });
+      var present = rows.filter(Boolean).map(function (r) { return r[metric.key]; });
+      var bestVal = metric.better === "lower" ? Math.min.apply(null, present) : Math.max.apply(null, present);
       rows.forEach(function (r, pi) {
+        if (!r) return;
         var v = r[metric.key], x = gx + pi * (bw + 2), yy = y(v), h = (H - B) - yy;
         var col = cssVar(POLICIES[pi].color);
-        parts.push('<rect x="' + x.toFixed(1) + '" y="' + yy.toFixed(1) + '" width="' + bw.toFixed(1) + '" height="' + Math.max(h, 1).toFixed(1) + '" rx="3" fill="' + col + '"' +
-          (v === bestVal ? '' : ' opacity=".78"') + '><title>' + POLICIES[pi].label + " · " + w + ": " + v.toLocaleString() + " " + metric.unit + "</title></rect>");
+        parts.push('<rect x="' + x.toFixed(1) + '" y="' + yy.toFixed(1) + '" width="' + bw.toFixed(1) + '" height="' + Math.max(h, 1).toFixed(1) + '" rx="2" fill="' + col + '"' +
+          (v === bestVal ? '' : ' opacity=".78"') + '><title>' + POLICIES[pi].label + " · " + WLABEL[w] + ": " + v.toLocaleString() + " " + metric.unit + "</title></rect>");
         if (v === bestVal) parts.push('<text x="' + (x + bw / 2).toFixed(1) + '" y="' + (yy - 6).toFixed(1) + '" text-anchor="middle" font-size="11" font-weight="700" fill="' + ink2 + '">★</text>');
       });
-      parts.push('<text x="' + (L + gi * gw + gw / 2) + '" y="' + (H - B + 22) + '" text-anchor="middle" font-size="13" fill="' + ink2 + '">' + w.charAt(0).toUpperCase() + w.slice(1) + "</text>");
+      parts.push('<text x="' + (L + gi * gw + gw / 2) + '" y="' + (H - B + 22) + '" text-anchor="middle" font-size="12" fill="' + ink2 + '">' + WLABEL[w] + "</text>");
     });
     parts.push('<line x1="' + L + '" x2="' + (W - R) + '" y1="' + (H - B) + '" y2="' + (H - B) + '" stroke="' + ink3 + '"/>');
     svg.innerHTML = parts.join("");

@@ -1,0 +1,99 @@
+{
+ "dir": "results/mounted/matrix/direct/bg2_read/sstf/rep2",
+ "workload": {
+  "dir": "/tmp/tmp.qqxRUct2dp/mnt",
+  "duration_s": 10.0,
+  "warmup_s": 1.0,
+  "bg": 2,
+  "bg_file_kb": 2048,
+  "bg_chunk_kb": 128,
+  "fg_interval_ms": 20.0,
+  "fg_file_kb": 64,
+  "fg_io_kb": 4,
+  "fg_op": "read",
+  "bg_mode": "write",
+  "seed": 1003,
+  "t0_monotonic_ns": 5299889632788
+ },
+ "fg_latency_ms": {
+  "n": 500,
+  "mean": 4.417076831999999,
+  "p50": 3.843697,
+  "p95": 8.847143,
+  "p99": 11.277189,
+  "max": 13.396149
+ },
+ "fg_errors": 0,
+ "bg_mb_per_s": 20.7486976,
+ "run": {
+  "schedfs_options": "--sched=sstf --direct-io",
+  "workload_options": "--warmup 1 --fg-interval-ms 20 --fg-file-kb 64 --fg-io-kb 4 --bg-file-kb 2048 --bg-chunk-kb 128 --duration 10.0 --bg 2 --fg-op read --seed 1003",
+  "image_size": "64M",
+  "kernel": "6.18.58.1-microsoft-standard-WSL2",
+  "cpus": 20,
+  "date": "2026-11-25T15:47:05Z",
+  "commit": "unknown"
+ },
+ "schedfs": {
+  "policy": "sstf",
+  "read_deadline_ms": "0.000",
+  "write_deadline_ms": "2.000",
+  "model_base_us": "0.000",
+  "model_us_per_block": "0.0000",
+  "direct_io": "1",
+  "queue_capacity": "128"
+ },
+ "block": {
+  "requests": 123745,
+  "requests_per_s": 12374.5,
+  "modeled_movement_blocks": 59002159,
+  "wait_ms": {
+   "fg": {
+    "n": 5755,
+    "mean": 0.26343992302345787,
+    "p50": 0.085542,
+    "p95": 0.440367,
+    "p99": 4.914355,
+    "max": 9.706529
+   },
+   "bg": {
+    "n": 117990,
+    "mean": 0.07964997691329774,
+    "p50": 0.066241,
+    "p95": 0.146988,
+    "p99": 0.279782,
+    "max": 4.888388
+   }
+  },
+  "service_ms": {
+   "n": 123745,
+   "mean": 0.07034347487979312,
+   "p50": 0.06406,
+   "p95": 0.119139,
+   "p99": 0.20333,
+   "max": 2.558638
+  },
+  "queue_depth": {
+   "mean": 1.2030061820679623,
+   "max": 3,
+   "share_picked_with_2plus": 0.20299810093337103
+  },
+  "fg_requests_finding_bg_waiting": 0.9285838401390095,
+  "fg_requests_per_op": {
+   "n": 500,
+   "mean": 11.51,
+   "p50": 11,
+   "p95": 14,
+   "p99": 17,
+   "max": 19
+  },
+  "fg_op_share_in_block_layer": {
+   "n": 500,
+   "mean": 0.8751934381904495,
+   "p50": 0.8832202355442899,
+   "p95": 0.9493107577888146,
+   "p99": 0.9577908998421504,
+   "max": 0.9654598797444326
+  }
+ }
+}
