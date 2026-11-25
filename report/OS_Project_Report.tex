@@ -1,5 +1,6 @@
 % =====================================================================
 %  FUSE-Based File System with Custom Disk Scheduling and Synchronization
+%  SchedFS: a responsiveness-focused file system with deadline-aware request scheduling
 %  (implementation name: SchedFS)
 %  Operating Systems Lab (24B11CS312) -- Project Report
 %  Formatting follows the approved project synopsis.
@@ -228,7 +229,9 @@
 \fontsize{13.9}{18}\selectfont\bfseries \projecttitle
 \end{center}
 
-\noindent This is the title approved in the project synopsis. The implementation is called \textbf{SchedFS}: a mountable Linux file system written in C11 on the FUSE~3 interface. Every block that the file system reads or writes is turned into a request, queued, and served in the order chosen by a disk-scheduling policy (FCFS, SSTF, SCAN or Adaptive) that is selected when the file system is mounted. The project therefore joins two chapters of an operating-systems course---\emph{file systems} and \emph{disk scheduling}---and adds a third, \emph{process synchronization}, because the queue between them is a bounded producer--consumer buffer shared by several threads.
+\noindent This is the title approved in the project synopsis. The implementation is called \textbf{SchedFS}: \emph{a responsiveness-focused file system with deadline-aware request scheduling}. It is a mountable Linux file system written in C11 on the FUSE~3 interface. Every block that the file system reads or writes is turned into a request, queued, and served in the order chosen by a scheduling policy that is selected when the file system is mounted: FCFS, SSTF, SCAN, LOOK, Adaptive or Deadline. The project therefore joins two chapters of an operating-systems course---\emph{file systems} and \emph{disk scheduling}---and adds a third, \emph{process synchronization}, because the queue between them is a bounded producer--consumer buffer shared by several threads.
+
+\noindent\textbf{Aim.} \emph{Build a mountable Linux filesystem that keeps everyday file operations responsive during competing bulk transfers by scheduling storage requests with deadlines, while maintaining useful throughput for background work.}
 
 \begin{table}[H]
 \centering
@@ -238,7 +241,8 @@
 \begin{tabularx}{\linewidth}{@{}>{\bfseries}p{3.6cm}X@{}}
 \toprule
 Project title & \projecttitle \\
-Implementation & SchedFS (repository name \code{FUSE}) \\
+Implementation & SchedFS (repository name \code{FUSE}), branch \code{feature/deadline-scheduler} \\
+Description & A responsiveness-focused file system with deadline-aware request scheduling \\
 Course & \coursename{} (\coursecode), Project Based Learning \\
 Session & Odd Semester 2026, Academic Session 2026--27 \\
 Supervisors & Dr. Tanvi Gautam, Dr. Sayani Ghosal, Mr. Umar Farooq \\
@@ -254,30 +258,30 @@ Interactive demo & \url{https://sharmaditya2k05.github.io/FUSE/} \\
 \section{ABSTRACT OF THE PROJECT}
 \label{sec:abstract}
 % =====================================================================
-Operating-systems courses treat file systems and disk scheduling as separate topics, so students rarely see a scheduling policy act on the I/O stream of a real file system. SchedFS joins the two. It is a mountable Linux file system implemented in C11 on the FUSE~3 interface. Its data lives in a single image file with a superblock, a free-block bitmap, 256 fixed-size inodes and 4~KiB data blocks reached through direct and single-indirect pointers. Every block read or write issued by the file system becomes a request in a bounded producer--consumer queue protected by a mutex and two condition variables. A single dispatcher thread selects the next request with a policy chosen at mount time---first-come first-served (FCFS), shortest seek time first (SSTF), SCAN, or an age-aware Adaptive policy---and only then calls \code{pread} or \code{pwrite} on the image, while each caller sleeps on its own condition variable until its request completes. The system also records seek distance and waiting time, and includes a trace-replay benchmark and a web visualisation. On the classic textbook trace the scheduler reproduces head movements of 640, 236 and 236 blocks for FCFS, SSTF and SCAN. On the mounted file system with four concurrent writers, SSTF reduced total head movement by 40\,\% compared with FCFS. Scheduler unit tests, core concurrency tests and mounted FUSE system tests all pass, and ThreadSanitizer reports no data races.
+When a large backup, import or copy runs in a shared workspace, small file operations can stall behind it. SchedFS is a mountable Linux file system, written in C11 on FUSE~3, that addresses this by ordering its storage requests. Every block read or write becomes a request in a bounded producer--consumer queue, and one dispatcher thread serves the requests in the order chosen at mount time: FCFS, SSTF, SCAN, LOOK, a heuristic Adaptive policy, or a \emph{deadline} policy. The deadline policy gives each request a service-start deadline (arrival + 0~ms for reads, + 2~ms for writes), serves overdue requests in deadline order and otherwise the nearest block. Deadline scheduling is an established approach; this project contributes its implementation in a working file system and its evaluation on mounted workloads. On one Windows~11 + WSL~2 machine (3 runs of 10~s per setting), small foreground reads during background writes or copies had a 22--56\,\% lower 99th-percentile latency than under SchedFS's FCFS policy, with real \code{O_DIRECT} I/O and with a modeled seek time, while background throughput stayed within $-13$\,\% to $+8$\,\% of FCFS. SSTF kept more background throughput under the modeled seek time but had a much higher tail latency. Small foreground updates with real I/O were 24\,\% slower than under FCFS. A code review found and fixed a truncate defect, an inode-lifetime race in \code{unlink}, duplicate names from concurrent \code{create} and a rename into a directory's own subtree; regression tests show each defect failing on the original code.
 
 % =====================================================================
 \section{SCOPE OF THE PROJECT}
 \label{sec:scope}
 % =====================================================================
-\textbf{Problem and objectives.} Disk-scheduling algorithms are normally studied on hand-written request lists \cite{silberschatz2018,tanenbaum2015}, detached from the software that produces disk traffic. The objective of SchedFS is to place these algorithms inside a working file system, so that ordinary commands such as \code{cp}, \code{cat} and \code{mkdir} generate the requests and the effect of each policy can be observed and measured. A second objective is to show correct multi-threaded synchronization: many FUSE worker threads produce requests concurrently, and a single consumer must serve them without races, lost wake-ups or deadlock.
+\textbf{Problem and objectives.} In a shared workspace, large background transfers (backups, dataset imports, large copies) and small interactive file operations happen at the same time. If every storage request is served in arrival order, a small read waits behind every queued background write; if requests are served by locality alone, a distant small read can be overtaken again and again. The objective of SchedFS is stated in its aim: \emph{build a mountable Linux filesystem that keeps everyday file operations responsive during competing bulk transfers by scheduling storage requests with deadlines, while maintaining useful throughput for background work.} The deliverable is the file system itself; the experiments measure how well it serves that aim and what it costs. A second objective is correct multi-threaded synchronization: many FUSE worker threads produce requests concurrently, and a single consumer must serve them without races, lost wake-ups or deadlock. Disk-scheduling algorithms are normally studied on hand-written request lists \cite{silberschatz2018,tanenbaum2015}; here ordinary commands such as \code{cp}, \code{cat} and \code{mkdir} generate the requests.
 
-\textbf{Scope and boundaries.} SchedFS implements an on-disk format, a formatter (\code{mkfs.schedfs}), the core file operations (create, read, write, truncate, rename, unlink, mkdir, rmdir, readdir, stat and statfs), four scheduling policies, metric collection, a benchmark harness and a test suite. Seek distance is modelled as the absolute difference between block numbers, as in textbook disk scheduling; the image file itself is stored on whatever device hosts it, so the project measures scheduling decisions rather than physical seek time. Journaling, crash recovery, hard and symbolic links, extended attributes, ACL enforcement and a block cache are outside the scope.
+\textbf{Scope and boundaries.} SchedFS implements an on-disk format, a formatter (\code{mkfs.schedfs}), the core file operations (create, read, write, truncate, rename, unlink, mkdir, rmdir, readdir, stat and statfs), six scheduling policies including the deadline policy, a per-request trace and metrics, a workload generator and experiment scripts for the mounted file system, a deterministic scheduler simulation, and a test suite. ``Movement'' is modelled as the absolute difference between block numbers, as in textbook disk scheduling; it is reported separately and never presented as a speed-up. Latency and throughput in the mounted experiments are measured end to end, either with real \code{O_DIRECT} I/O to the virtual disk of a WSL~2 machine or with an additional \emph{modeled} service time that stands in for a disk where position matters. No physical hard disk was measured. Journaling, crash recovery, hard and symbolic links, extended attributes, ACL enforcement and a block cache are outside the scope.
 
-\textbf{Intended users.} The primary users are operating-systems students and instructors who want to see scheduling and synchronization at work on real I/O. The benchmark and the web visualisation also serve as teaching aids during lectures and viva examinations.
+\textbf{Intended users.} The intended users are people who share a workspace in which bulk transfers and interactive work overlap, and operating-systems students and instructors who want to see scheduling and synchronization at work on real I/O. The trace, the simulation and the web visualisation also serve as teaching aids.
 
-\textbf{Operating-systems relevance.} The project exercises file-system layout and indexed allocation, free-space management with a bitmap, disk scheduling, the bounded-buffer problem, mutexes, condition variables and reader--writer locks, lock ordering for deadlock avoidance, user-space file systems and the system-call interface (\code{open}, \code{pread}, \code{pwrite}, \code{fsync}, \code{fork} during daemonization) \cite{silberschatz2018,arpaci2018,kerrisk2010}.
+\textbf{Operating-systems relevance.} The project exercises file-system layout and indexed allocation, free-space management with a bitmap, disk scheduling, starvation and fairness, deadline scheduling, the bounded-buffer problem, mutexes, condition variables and reader--writer locks, lock ordering for deadlock avoidance, user-space file systems, the system-call interface (\code{open}, \code{pread}, \code{pwrite}, \code{fsync}, \code{fork} during daemonization) and performance measurement with traces, percentiles and repetitions \cite{silberschatz2018,arpaci2018,kerrisk2010}.
 
-\textbf{Practical applications.} The same layering---a request queue in front of a block device with a pluggable policy---is used by real I/O schedulers in operating-system kernels \cite{worthington1994}. SchedFS can be used to compare policies on custom workloads, to demonstrate starvation and fairness, and as a starting point for adding policies such as C-SCAN or LOOK.
+\textbf{Practical applications.} The same layering---a request queue in front of a block device with a pluggable policy---is used by real I/O schedulers in operating-system kernels \cite{worthington1994}, and the Linux deadline I/O scheduler also gives reads and writes separate expiry times. SchedFS shows the effect of such a policy on a working file system under competing bulk transfers, with the textbook policies on the same request path as baselines.
 
-\textbf{Limitations.} The maximum file size is 1{,}036 blocks (about 4.05~MiB). A clean unmount is required for persistence because there is no journal. \code{rename} refuses to replace an existing target. The image format is native little-endian and intended for Linux on x86-64.
+\textbf{Limitations.} The maximum file size is 1{,}036 blocks (about 4.05~MiB) and there are 256 inodes. A clean unmount is required for persistence because there is no journal. \code{rename} refuses to replace an existing target. Every operation goes through FUSE, so SchedFS is much slower than a kernel file system. The deadline policy classifies requests only as reads or writes; its benefit is for foreground reads during background writes, and it does not help foreground writes as much. All measurements come from one Windows~11 + WSL~2 machine. The image format is native little-endian and intended for Linux on x86-64.
 
 % ---------------------------------------------------------------------
 \renewcommand{\thesubsection}{\thesection(\alph{subsection})}
 \subsection{Functional Requirements}
 \label{sec:fr}
 % ---------------------------------------------------------------------
-\tabref{tab:fr} lists twelve functional requirements. Each one is implemented and is exercised by a test or a captured run in Section~\ref{sec:testing}.
+\tabref{tab:fr} lists fifteen functional requirements. Each one is implemented and is exercised by a test or a captured run in Section~\ref{sec:testing}.
 
 {\small
 \begin{longtable}{@{}p{0.9cm}p{3.1cm}p{7.3cm}p{2.6cm}@{}}
@@ -296,14 +300,17 @@ FR1 & Format an image & \code{mkfs.schedfs IMAGE SIZE} creates a new image, writ
 FR2 & Mount as a Linux file system & \code{schedfs IMAGE MOUNTPOINT --sched=POLICY} validates the image, prints its geometry and mounts it through FUSE, in the foreground (\code{-f}) or as a background daemon. & M2 FUSE adapter \\
 FR3 & Create, read and write files & Regular files can be created, written at any offset and read back byte-for-byte, including files larger than 48~KiB that need the single-indirect block. & M3, M4 \\
 FR4 & Directory operations & \code{mkdir}, \code{rmdir} and \code{readdir} work on nested directories; removing a non-empty directory fails with \code{ENOTEMPTY}. & M3 Inode and directory layer \\
-FR5 & Rename, delete and truncate & \code{rename}, \code{unlink} and \code{truncate} are supported; truncating to a larger size creates a sparse region that reads as zeros. & M3, M4 \\
+FR5 & Rename, delete and truncate & \code{rename}, \code{unlink} and \code{truncate} are supported. Truncating to a larger size creates a sparse region that reads as zeros, also after a shrink inside a block. A directory cannot be moved into its own subtree (\code{EINVAL}). & M3, M4 \\
 FR6 & Metadata and capacity & \code{stat} reports size, mode, owner and timestamps; \code{df} reports total and free capacity through \code{statfs}. & M2, M3 \\
-FR7 & Scheduled block I/O & Every block read or write after mounting is submitted as a request to a bounded queue and performed only by the dispatcher thread. & M5, M7 \\
-FR8 & Selectable scheduling policies & FCFS, SSTF, SCAN and Adaptive are selectable at mount time; Adaptive is tunable with \code{--alpha} and \code{--beta}. Invalid policy names or negative weights are rejected. & M6 Scheduler \\
+FR7 & Scheduled block I/O & Every block read or write after mounting is submitted as a request to a bounded queue (capacity 128, \code{--queue=N}) and performed only by the dispatcher thread. & M5, M7 \\
+FR8 & Selectable scheduling policies & FCFS, SSTF, SCAN, LOOK, Adaptive and Deadline are selectable with \code{--sched=}; Adaptive is tunable with \code{--alpha} and \code{--beta}. Invalid policy names or negative values are rejected. & M6 Scheduler \\
 FR9 & Persistence & Data and metadata written before a clean unmount are present after remounting, including under a different policy. & M3, M7 \\
-FR10 & Metrics and logging & Request count and total seek distance are logged at unmount; \code{--verbose} adds DEBUG entries such as block allocations to \code{filesystem.log}. & M8 Metrics and logging \\
-FR11 & Benchmark and graphs & \code{schedfs-bench --all} replays five fixed traces under every policy and writes \code{benchmark.csv}; \code{plot\_results.py} draws comparison graphs. & M9 Benchmark \\
-FR12 & Interactive visualisation & A web page animates the head movement of each policy on the textbook and benchmark traces using a port of \code{scheduler\_pick()}. & M9 Benchmark and visualisation \\
+FR10 & Metrics, trace and logging & Request count, modeled movement, queue wait and queue depth are recorded; \code{--trace=FILE} writes one CSV row per served request (arrival, start, end, block, operation, movement, queue depth, caller); \code{--verbose} adds DEBUG entries to \code{filesystem.log}. & M7, M8 \\
+FR11 & Deterministic simulation & \code{schedfs-bench --all} replays five fixed traces and two dynamic scenarios through the real \code{scheduler_pick()} with a simulated clock and writes \code{benchmark.csv}; results are labelled as simulation. & M6, M9 \\
+FR12 & Interactive visualisation & A web page animates each policy on the textbook and benchmark traces using a port of \code{scheduler\_pick()}. & M9 \\
+FR13 & Deadline policy & \code{--sched=deadline} gives each request a service-start deadline (\code{--read-deadline-ms}, default 0; \code{--write-deadline-ms}, default 2); overdue requests are served earliest deadline first, otherwise the nearest block. & M6 \\
+FR14 & Storage configurations & \code{--direct-io} opens the image with \code{O_DIRECT}; \code{--model-base-us} and \code{--model-us-per-block} add a modeled service time per request. & M7 \\
+FR15 & Workload and experiments & \code{schedfs-workload} runs a timed foreground operation every 20~ms alongside background writers or copiers; \code{scripts/experiments.py}, \code{analyze_run.py} and \code{report_results.py} run, analyse and tabulate repeated mounted experiments. & M9 \\
 \end{longtable}
 }
 
@@ -311,7 +318,7 @@ FR12 & Interactive visualisation & A web page animates the head movement of each
 \subsection{Non-Functional Requirements}
 \label{sec:nfr}
 % ---------------------------------------------------------------------
-\tabref{tab:nfr} lists eight non-functional requirements, each with the criterion used to check it.
+\tabref{tab:nfr} lists nine non-functional requirements, each with the criterion used to check it.
 
 {\small
 \begin{longtable}{@{}p{0.9cm}p{2.6cm}p{6.6cm}p{3.8cm}@{}}
@@ -326,14 +333,15 @@ FR12 & Interactive visualisation & A web page animates the head movement of each
 \endhead
 \bottomrule
 \endfoot
-NFR1 & Correctness and reliability & Data written through the mount must read back identically and survive remounting. & \code{cmp} reports identical files; all \code{make test} stages pass (Section~\ref{sec:results}). \\
-NFR2 & Thread safety & Concurrent FUSE worker threads share the queue, bitmap, inode table and superblock. & ThreadSanitizer reports no data race in the 4-thread core test. \\
-NFR3 & Deadlock freedom & Locks are always acquired in one documented global order. & No hang in any test run; lock order in \figref{fig:locks}. \\
-NFR4 & Determinism & The same request set must give the same service order for a policy. & Ties broken by arrival time, then request ID; FCFS, SSTF and SCAN seek totals are identical across runs. \\
-NFR5 & Bounded resource use & The queue holds at most 128 requests; metadata overhead is fixed. & Queue capacity 128; metadata uses 10 of 4{,}096 blocks (0.24\,\%) on a 16~MiB image. \\
-NFR6 & Maintainability & Code is split into layered modules with small interfaces and a fixed style. & 8 headers, one module per directory, \code{clang-format} style; builds with \code{-Wall -Wextra -Wpedantic -Wshadow -Wconversion} and no warnings. \\
-NFR7 & Usability & Commands follow normal Linux conventions and give clear error messages. & Usage text on invalid options; standard \code{errno} messages (\figref{fig:term-errors}, \figref{fig:term-ops}). \\
-NFR8 & Portability & Runs on any Linux system with libfuse~3 and a C11 compiler. & Built and tested on Ubuntu 24.04 with GCC 13.3 and libfuse 3.14. \\
+NFR1 & Correctness and reliability & Data written through the mount must read back identically and survive remounting; the image must stay consistent. & \code{cmp} reports identical files; an fsck-style checker finds no double-referenced block and matching counters after every regression phase; all \code{make test} stages pass. \\
+NFR2 & Thread safety & Concurrent FUSE worker threads share the namespace, inodes, queue, bitmap, inode table and superblock. & ThreadSanitizer (\code{make tsan}) reports no data race in the core and regression tests (supporting evidence, not proof). \\
+NFR3 & Deadlock freedom & Locks are always acquired in one documented global order, from \code{ns_lock} to the per-request mutex. & No hang in any test run; lock order in \figref{fig:locks}; the dispatcher takes only the queue and per-request mutexes. \\
+NFR4 & Determinism & The same request set and arrival times must give the same service order for a policy. & Ties broken by arrival time, then request ID; the simulation and scheduler tests use a simulated clock, so every policy, including Adaptive and Deadline, gives identical results on every run. \\
+NFR5 & Bounded resource use & The queue holds at most 128 requests (configurable); metadata overhead is fixed. & Producers block when the queue is full; metadata uses 10 of 4{,}096 blocks (0.24\,\%) on a 16~MiB image. \\
+NFR6 & Responsiveness & Small foreground reads should not wait behind background writes. & Foreground p99 lower than under FCFS in the mounted read workloads (Section~\ref{sec:mountedres}). \\
+NFR7 & Maintainability & Code is split into layered modules with small interfaces and a fixed style. & 9 headers, one module per directory, \code{clang-format} style; builds with \code{-Wall -Wextra -Wpedantic -Wshadow -Wconversion}. \\
+NFR8 & Usability & Commands follow normal Linux conventions and give clear error messages. & Usage text on invalid options; standard \code{errno} messages (\figref{fig:term-errors}, \figref{fig:term-ops}). \\
+NFR9 & Portability & Runs on any Linux system with libfuse~3 and a C11 compiler. & Built and tested on Ubuntu 24.04 (container on WSL~2) with GCC 13.3 and libfuse 3.14.0. \\
 \end{longtable}
 }
 
@@ -353,24 +361,24 @@ SchedFS is organised into ten modules. Nine follow directly from the source tree
 \textbf{ID} & \textbf{Module} & \textbf{Main source files} & \textbf{LOC} \\
 \midrule
 M1 & Image formatter & \code{mkfs/mkfs.c}, \code{include/layout.h} & 180 \\
-M2 & FUSE adapter & \code{src/fuse/fuse_main.c} & 199 \\
-M3 & Inode and directory layer & \code{src/fs/filesystem.c} (paths, inodes, dirs) & \multirow{2}{*}{808} \\
+M2 & FUSE adapter & \code{src/fuse/fuse_main.c} & 268 \\
+M3 & Inode and directory layer & \code{src/fs/filesystem.c} (paths, inodes, dirs, locks) & \multirow{2}{*}{882} \\
 M4 & Block allocation and mapping & \code{src/fs/filesystem.c} (bitmap, \code{bmap}) & \\
-M5 & Request lifecycle and bounded queue & \code{src/sync/request_queue.c} & 149 \\
-M6 & Disk scheduler & \code{src/sched/scheduler.c} & 113 \\
-M7 & Virtual disk and dispatcher & \code{src/storage/virtual_disk.c} & 124 \\
-M8 & Metrics and logging & \code{src/bench/metrics.c}, \code{src/utils/logger.c} & 84 \\
-M9 & Benchmark and visualisation & \code{src/bench/benchmark_main.c}, \code{scripts/} & 246 \\
-M10 & Test suite and build & \code{tests/}, \code{Makefile} & 200 \\
+M5 & Request lifecycle and bounded queue & \code{src/sync/request_queue.c} & 155 \\
+M6 & Scheduler and simulator & \code{src/sched/scheduler.c}, \code{src/sched/sim.c} & 273 \\
+M7 & Virtual disk and dispatcher & \code{src/storage/virtual_disk.c} & 303 \\
+M8 & Metrics and logging & \code{src/bench/metrics.c}, \code{src/utils/logger.c} & 88 \\
+M9 & Simulation, workload and experiments & \code{src/bench/benchmark_main.c}, \code{src/bench/workload.c}, \code{scripts/} & 1{,}192 \\
+M10 & Test suite and build & \code{tests/}, \code{Makefile}, \code{scripts/check_old_defects.sh} & 864 \\
 \midrule
- & \textbf{Total} & & \textbf{2{,}103} \\
+ & \textbf{Total} & & \textbf{4{,}205} \\
 \bottomrule
 \end{tabularx}
 \end{table}
 
 \noindent\emph{Counting note.} LOC are non-blank, non-comment lines, including each module's header files (Section~\ref{sec:loc}). M3 and M4 are counted together because they share one source file and \code{include/filesystem.h}.
 
-\textbf{Traceability to the synopsis.} The approved synopsis planned ten modules and 26 functional requirements (FR-01 to FR-26). During implementation some planned modules were merged into fewer source files. For example, all four policies live in \code{scheduler.c} rather than one file per policy, and the superblock, inode and directory code share \code{filesystem.c}. Some functions also received different names: the synopsis's \code{pick_next()} became \code{scheduler_pick()}, and \code{blk_alloc} became \code{alloc_block}. \tabref{tab:synmod} maps each planned module to its implementation, and \tabref{tab:synfr} maps the synopsis requirements to the requirements of this report.
+\textbf{Traceability to the synopsis.} The approved synopsis planned ten modules and 26 functional requirements (FR-01 to FR-26). During implementation some planned modules were merged into fewer source files, and the project went beyond the synopsis in two ways: the LOOK and Deadline policies were added, and the evaluation moved from fixed traces to measured experiments on the mounted file system. For example, all six policies live in \code{scheduler.c} rather than one file per policy, and the superblock, inode and directory code share \code{filesystem.c}. Some functions also received different names: the synopsis's \code{pick_next()} became \code{scheduler_pick()}, and \code{blk_alloc} became \code{alloc_block}. \tabref{tab:synmod} maps each planned module to its implementation, and \tabref{tab:synfr} maps the synopsis requirements to the requirements of this report.
 
 \begin{table}[H]
 \centering
@@ -388,9 +396,9 @@ M10 & Test suite and build & \code{tests/}, \code{Makefile} & 200 \\
 5 & Virtual disk & M7 & \code{virtual_disk.c}: \code{vdisk_open}, \code{vdisk_read}, \code{vdisk_write} \\
 6 & Block allocation & M4 & \code{filesystem.c}: \code{alloc_block}, \code{free_block}, \code{free_inode_blocks} \\
 7 & Request queue & M5 & \code{request_queue.c}: \code{rq_submit}, \code{rq_take}, \code{request_wait} \\
-8 & Disk scheduling & M6 & \code{scheduler.c}: \code{scheduler_pick} \\
-9 & Synchronization & M5, M7 (locks in M3, M4) & dispatcher thread in \code{virtual_disk.c}; mutexes and rwlocks in \code{filesystem.c} \\
-10 & Benchmarking & M8, M9 & \code{benchmark_main.c}, \code{metrics.c}, \code{scripts/} \\
+8 & Disk scheduling & M6 & \code{scheduler.c}: \code{scheduler_pick}, \code{scheduler_advance}; \code{sim.c}: \code{sim_run} \\
+9 & Synchronization & M5, M7 (locks in M3, M4) & dispatcher thread in \code{virtual_disk.c}; \code{ns_lock}, mutexes and rwlocks in \code{filesystem.c} \\
+10 & Benchmarking & M8, M9 & \code{benchmark_main.c}, \code{workload.c}, \code{metrics.c}, \code{scripts/} \\
 \bottomrule
 \end{tabularx}
 \end{table}
@@ -400,7 +408,7 @@ M10 & Test suite and build & \code{tests/}, \code{Makefile} & 200 \\
 \caption{Synopsis functional requirements and the corresponding requirements in this report}
 \label{tab:synfr}
 \small
-\begin{tabularx}{\linewidth}{@{}l l X@{}}
+\begin{tabularx}{\linewidth}{@{}>{\raggedright\arraybackslash}p{6.2cm} l X@{}}
 \toprule
 \textbf{Synopsis} & \textbf{This report} & \textbf{Note} \\
 \midrule
@@ -415,10 +423,10 @@ FR-12 Inode management & FR3, FR6 & \\
 FR-13, FR-14 Block allocation and release & FR3, FR5 & module M4 \\
 FR-15 Virtual disk I/O & FR1, FR9 & \\
 FR-16, FR-17, FR-24 Requests, queue, producer--consumer & FR7 & \\
-FR-18 to FR-21 FCFS, SSTF, SCAN, Adaptive & FR8 & \\
+FR-18 to FR-21 FCFS, SSTF, SCAN, Adaptive & FR8 & LOOK and Deadline (FR13) added beyond the synopsis \\
 FR-22, FR-23 Concurrent I/O, synchronization & FR7, NFR2, NFR3 & \\
-FR-25 Logging & FR10 & mount summaries, allocations (verbose) and errors are logged; individual scheduling decisions are not \\
-FR-26 Metrics & FR10, FR11 & \\
+FR-25 Logging & FR10 & mount summaries, allocations (verbose) and errors are logged; individual scheduling decisions go to the \code{--trace} file \\
+FR-26 Metrics & FR10, FR11, FR15 & \\
 \bottomrule
 \end{tabularx}
 \end{table}
@@ -452,9 +460,9 @@ Source files & #8 \\
 
 \moddesc{M2. FUSE Adapter}
 {Connect the Linux VFS to the SchedFS API and manage the mount lifecycle.}
-{Command-line options (image, mount point, policy, \code{alpha}, \code{beta}, \code{--verbose}, FUSE options) and FUSE callbacks from the kernel.}
+{Command-line options (image, mount point, \code{--sched}, read and write deadlines, \code{alpha}, \code{beta}, \code{--direct-io}, modeled service time, \code{--queue}, \code{--trace}, \code{--verbose}, FUSE options) and FUSE callbacks from the kernel.}
 {Return codes and data for each VFS operation; a mounted file system of type \code{fuse.schedfs}.}
-{\code{main()} parses the options, resolves the image to an absolute path, validates it once so errors reach the terminal, and calls \code{fuse_main()}. After FUSE daemonizes, the \code{init} callback mounts the image and starts the dispatcher; \code{destroy} unmounts it. Each callback such as \code{op_read} or \code{op_mkdir} forwards to the matching \code{sfs_*} function.}
+{\code{main()} parses the options into a \code{vdisk_options_t}, resolves the image and trace paths to absolute paths, validates the image once so errors reach the terminal, and calls \code{fuse_main()}. After FUSE daemonizes, the \code{init} callback mounts the image and starts the dispatcher; \code{destroy} unmounts it. Each callback such as \code{op_read} or \code{op_mkdir} records the calling process id for the trace (measurement only) and forwards to the matching \code{sfs_*} function.}
 {User-space file systems, system-call dispatch through the VFS, \code{fork} during daemonization, process working directory.}
 {Calls M3 for every operation; relies on M7 being started inside \code{op_init}.}
 {\code{src/fuse/fuse_main.c} (\code{op_init}, \code{op_destroy}, \code{op_getattr}, \ldots, \code{main}).}
@@ -463,8 +471,8 @@ Source files & #8 \\
 {Implement files, directories and path names on top of numbered blocks.}
 {Absolute paths, byte offsets and buffers from M2.}
 {File data, \code{struct stat}, directory listings and \code{errno} codes such as \code{ENOENT}, \code{EEXIST}, \code{ENOTEMPTY}, \code{ENAMETOOLONG}.}
-{\code{resolve()} walks the path from the root inode, one component at a time, using \code{dir_find()}. Directories are arrays of 64-byte entries. \code{inode_alloc()} finds a free slot among 256 inodes; \code{inode_read}/\code{inode_write} copy a 128-byte inode in or out of its 4~KiB table block. Read, write and truncate take a reader--writer lock per inode.}
-{Inodes, directories, path-name resolution, reader--writer locks, metadata consistency.}
+{\code{resolve()} walks the path from the root inode, one component at a time, using \code{dir_find()}. Directories are arrays of 64-byte entries. \code{inode_alloc()} finds a free slot among 256 inodes; \code{inode_read}/\code{inode_write} copy a 128-byte inode in or out of its 4~KiB table block. A namespace reader--writer lock (\code{ns_lock}) serialises create, mkdir, unlink, rmdir and rename; \code{lookup_locked()} holds it for reading only until the target inode's reader--writer lock is taken. \code{unlink} and \code{rmdir} free an inode only under its write lock (\code{destroy_inode}). \code{truncate} zeroes the discarded tail of a partial block, and \code{rename} refuses to move a directory into its own subtree.}
+{Inodes, directories, path-name resolution, reader--writer locks, object lifetime, metadata consistency.}
 {Calls M4 to map logical blocks and M7 (\code{vdisk_read}/\code{vdisk_write}) for every block.}
 {\code{src/fs/filesystem.c} (\code{resolve}, \code{dir_find}, \code{dir_add}, \code{dir_remove}, \code{inode_*}, \code{sfs_*}); \code{include/filesystem.h}.}
 
@@ -472,7 +480,7 @@ Source files & #8 \\
 {Manage free space and translate a file's logical block numbers into disk blocks.}
 {An inode, a logical block number and a \emph{create} flag.}
 {A physical block number (0 for a hole), or \code{ENOSPC}/\code{EFBIG}.}
-{\code{bmap()} uses \code{direct[0..11]} for the first 12 blocks and the single-indirect block (1{,}024 pointers) after that. \code{alloc_block()} searches the in-memory bitmap from a \emph{hint}---the previous block of the same file---and wraps around once, so consecutive file blocks tend to be adjacent. Each allocation updates the bitmap and superblock on disk and zero-fills the new block.}
+{\code{bmap()} uses \code{direct[0..11]} for the first 12 blocks and the single-indirect block (1{,}024 pointers) after that. \code{alloc_block()} searches the in-memory bitmap from a \emph{hint}---the previous block of the same file---and wraps around once, so consecutive file blocks tend to be adjacent. Each allocation writes the bitmap and superblock to disk and zero-fills the new block; \code{bitmap_io_lock} and \code{super_io_lock} keep each snapshot and its write together, so writes of the same metadata block are queued in snapshot order.}
 {Indexed allocation, free-space management with a bitmap, locality-aware allocation.}
 {Used by M3; writes through M7.}
 {\code{src/fs/filesystem.c} (\code{bmap}, \code{alloc_block}, \code{free_block}, \code{free_inode_blocks}, \code{sync_bitmap}, \code{sync_sb}).}
@@ -481,55 +489,55 @@ Source files & #8 \\
 {Carry one block I/O from a file-system thread to the dispatcher and back.}
 {A request (operation, block number, buffer) from M7's \code{transfer()}.}
 {The request handed to the dispatcher; the caller woken with the result.}
-{\code{request_init} stamps an ID and a monotonic arrival time. \code{rq_submit} appends to an array of at most 128 entries, waiting on \code{not_full} when the array is full. \code{rq_take} waits on \code{not_empty}, asks M6 which request to serve, removes it and signals \code{not_full}. \code{request_wait} sleeps on the request's own condition variable until \code{completed} is set.}
+{\code{request_init} stamps an ID, the calling process and a monotonic arrival time. \code{rq_submit} appends to an array of at most 128 entries (configurable), waiting on \code{not_full} when the array is full. \code{rq_take} waits on \code{not_empty}, reads the clock, asks M6 which request to serve, records the queue depth, removes the request and signals \code{not_full}. \code{request_wait} sleeps on the request's own condition variable until \code{completed} is set.}
 {Bounded-buffer (producer--consumer) problem, mutexes, condition variables, predicate re-checking after wake-up.}
 {Called by M7; calls M6 under the queue mutex.}
 {\code{src/sync/request_queue.c}; \code{include/request.h}, \code{include/request_queue.h}.}
 
-\moddesc{M6. Disk Scheduler}
-{Choose which pending request to serve next.}
-{The pending requests, the current head position and direction, and the current time.}
-{The index of the chosen request.}
-{FCFS chooses the oldest request. SSTF chooses the smallest $|\text{head}-\text{block}|$. SCAN chooses the nearest request in the current direction and, if none remains, the nearest request overall (the dispatcher then reverses direction). Adaptive minimises $\alpha \cdot d/N - \beta \cdot w/w_{\max}$. Every tie is broken by arrival time and then request ID.}
-{Disk-scheduling algorithms, starvation versus throughput, ageing.}
-{Called by M5 (live) and by M9 and the unit test (replay).}
-{\code{src/sched/scheduler.c} (\code{scheduler_pick}, \code{scheduler_parse}, \code{older}, \code{distance}); \code{include/scheduler.h}.}
+\moddesc{M6. Scheduler and Simulator}
+{Choose which pending request to serve next; define the movement model; simulate the scheduling path with a simulated clock.}
+{The pending requests, the head position and direction, the current time, and the policy's parameters (deadlines, $\alpha$, $\beta$).}
+{The index of the chosen request; the modeled movement of each service; simulated waits and orders.}
+{FCFS chooses the oldest request. SSTF chooses the smallest $|\text{head}-\text{block}|$. SCAN and LOOK choose the nearest request in the current direction and, if none remains, the nearest request overall. Adaptive minimises $\alpha \cdot d/N - \beta \cdot w/w_{\max}$. Deadline serves the overdue request with the earliest deadline, or the nearest block if none is overdue. Every tie is broken by arrival time and then request ID. \code{scheduler_advance()} moves the head and returns the movement: SCAN is charged the travel to the disk edge when it reverses, LOOK is not. \code{sim_run()} admits timed arrivals into a bounded queue and serves them through the same two functions.}
+{Disk-scheduling algorithms, starvation and fairness, deadline scheduling, discrete-event simulation.}
+{Called by M5 (live), by the simulation in M9 and by the tests.}
+{\code{src/sched/scheduler.c} (\code{scheduler_pick}, \code{scheduler_advance}, \code{scheduler_deadline}, \code{scheduler_parse}); \code{src/sched/sim.c} (\code{sim_run}); \code{include/scheduler.h}, \code{include/sim.h}.}
 
 \moddesc{M7. Virtual Disk and Dispatcher}
 {Own the image file and perform all block I/O on one dedicated thread.}
 {Block reads and writes from M3/M4 (\code{vdisk_read}, \code{vdisk_write}).}
-{4~KiB block transfers to and from \code{disk.img}; completion signals; metric samples.}
-{\code{vdisk_open} opens the image and creates the dispatcher thread. \code{transfer()} builds a request on the caller's stack, submits it and waits. The dispatcher loops on \code{rq_take}, performs a full \code{pread}/\code{pwrite} (retrying on \code{EINTR} and short transfers), records the seek distance and waiting time, updates the head position and SCAN direction, and signals the caller. \code{vdisk_close} stops the queue, joins the thread and calls \code{fsync}.}
-{Threads, single-consumer service loop, the \code{pread}/\code{pwrite} system calls, graceful shutdown.}
+{4~KiB block transfers to and from \code{disk.img}; completion signals; metric samples; an optional per-request trace file.}
+{\code{vdisk_open} opens the image (with \code{O_DIRECT} and an aligned bounce buffer if \code{--direct-io} is given) and creates the dispatcher thread. \code{transfer()} builds a request on the caller's stack, submits it and waits. The dispatcher loops on \code{rq_take}, stamps the service start, moves the head with \code{scheduler_advance()}, performs a full \code{pread}/\code{pwrite} (retrying on \code{EINTR} and short transfers), holds the request until the modeled service time has passed (if configured), records metrics and a trace row, and signals the caller. \code{vdisk_close} stops the queue, joins the thread, calls \code{fsync} and writes the trace.}
+{Threads, single-consumer service loop, the \code{pread}/\code{pwrite} system calls, \code{O_DIRECT}, graceful shutdown.}
 {Consumes M5, calls M6 through M5, reports to M8.}
 {\code{src/storage/virtual_disk.c}; \code{include/virtual_disk.h}.}
 
 \moddesc{M8. Metrics and Logging}
 {Measure scheduling behaviour and record events.}
-{Seek samples (from block, to block, waiting time) and log messages.}
+{Samples from the dispatcher (movement, queue wait, queue depth) and log messages.}
 {Running totals and \code{filesystem.log} entries with timestamps and levels.}
-{\code{metrics_record} updates request count, total seek, waiting-time sum, sum of squares and maximum under a mutex. The logger formats ISO-8601 timestamps and writes INFO, WARNING and ERROR entries, plus DEBUG entries when \code{--verbose} is given.}
+{\code{metrics_record} updates request count, total movement, queue-depth sum and maximum, waiting-time sum, sum of squares and maximum under a mutex. The logger formats ISO-8601 timestamps and writes INFO, WARNING and ERROR entries, plus DEBUG entries when \code{--verbose} is given.}
 {Performance measurement with \code{CLOCK_MONOTONIC}, thread-safe shared counters.}
 {Fed by M7 and M3; read at unmount to log the summary line.}
 {\code{src/bench/metrics.c}, \code{src/utils/logger.c}; \code{include/metrics.h}, \code{include/logger.h}.}
 
-\moddesc{M9. Benchmark and Visualisation}
-{Compare the policies on identical traces and present the results.}
-{Five fixed block traces (sequential, random, clustered, mixed, concurrent).}
-{\code{benchmark.csv}; PNG graphs; an interactive web page.}
-{\code{schedfs-bench} replays each trace under each policy with a starting head of 53, calls \code{scheduler_pick} repeatedly, adds SCAN's travel to the disk edge, applies a seek-delay model of 10~\textmu s plus 2~\textmu s per block, and writes ten metrics per run. \code{plot_results.py} reads the CSV with pandas and draws bar charts with Matplotlib. \code{docs/index.html} animates the same selection logic in the browser.}
-{Disk-scheduling evaluation: seek distance, waiting time, throughput, fairness.}
-{Reuses M6 directly, without the file system.}
-{\code{src/bench/benchmark_main.c}, \code{scripts/plot_results.py}, \code{scripts/generate_workload.py}, \code{docs/index.html}.}
+\moddesc{M9. Simulation, Workload and Experiments}
+{Compare the policies in a deterministic simulation, and measure them on the mounted file system.}
+{Five fixed traces and two dynamic scenarios (simulation); workload options, policies, storage configurations and seeds (mounted experiments).}
+{\code{benchmark.csv} and simulation charts; per-run foreground samples, background progress, traces and \code{run.json}; \code{results/mounted/summary.md}, \code{summary.csv} and charts; an interactive web page.}
+{\code{schedfs-bench} runs \code{sim_run()} for every scenario and policy with a modeled service time and writes the CSV; it is labelled as a simulation. \code{schedfs-workload} starts one foreground process that opens a small file, reads or updates 4~KiB at a seeded random offset and closes it every 20~ms, and N background processes that write or copy 2~MiB files; it records the end-to-end latency of every foreground operation and the background bytes. \code{run_mounted.sh} formats a fresh image, mounts it with the given options and runs the workload; \code{experiments.py} runs the tuning and evaluation matrices; \code{analyze_run.py} and \code{report_results.py} compute percentiles, throughput and block-level statistics and draw the charts. \code{demo.sh} is the four-step live demonstration.}
+{Performance measurement: percentiles, repetitions, measured versus modeled quantities, starvation and fairness.}
+{The simulation reuses M6 without the file system; the experiments drive M1--M8 through a real mount.}
+{\code{src/bench/benchmark_main.c}, \code{src/bench/workload.c}, \code{scripts/*.py}, \code{scripts/run_mounted.sh}, \code{scripts/demo.sh}, \code{docs/index.html}.}
 
 \moddesc{M10. Test Suite and Build}
-{Build all binaries and verify behaviour at three levels.}
-{Source files; a freshly formatted image; \code{/dev/fuse}.}
+{Build all binaries and verify behaviour at several levels.}
+{Source files; freshly formatted images; \code{/dev/fuse} for the system test.}
 {Executables and pass/fail results.}
-{The Makefile builds \code{schedfs}, \code{mkfs.schedfs} and \code{schedfs-bench} with strict warnings. \code{test_scheduler} checks the textbook trace; \code{test_core} runs persistence and 4-thread concurrency checks against the core API; \code{system.sh} mounts a real image under each policy, and once in background mode, and runs shell commands against it.}
-{Unit, integration and system testing of concurrent code.}
+{The Makefile builds \code{schedfs}, \code{mkfs.schedfs}, \code{schedfs-bench} and \code{schedfs-workload} with strict warnings, and has the targets \code{unit}, \code{test} and \code{tsan}. \code{test_scheduler} checks every policy with a simulated clock (119 checks); \code{test_core} runs persistence and 4-thread concurrency checks; \code{test_regress} reproduces the review findings and runs an fsck-style image checker; \code{system.sh} mounts a real image under all six policies, and once in background mode. \code{check_old_defects.sh} runs the regression tests against the original \code{filesystem.c}.}
+{Unit, regression, integration and system testing of concurrent code; data-race detection.}
 {Exercises M1--M8.}
-{\code{Makefile}, \code{tests/test_scheduler.c}, \code{tests/test_core.c}, \code{tests/system.sh}.}
+{\code{Makefile}; in \code{tests/}: \code{test_scheduler.c}, \code{test_core.c}, \code{test_regress.c}, \code{system.sh}; \code{scripts/}\allowbreak\code{check_old_defects.sh}.}
 
 \renewcommand{\thesubsection}{\thesection.\arabic{subsection}}
 % =====================================================================
@@ -552,23 +560,23 @@ Every technology in \tabref{tab:tools} was confirmed in the source tree, the Mak
 \endfoot
 C11 (GNU dialect, \code{-std=gnu11}) & Implementation language & All of \code{src/}, \code{mkfs/} and the C tests; \code{_Static_assert} checks the on-disk structure sizes; \code{stdatomic.h} provides the request-ID counter \cite{iso2011c}. \\
 GCC 13.3 & Compiler & Builds with \code{-O2 -g -Wall -Wextra -Wpedantic -Wshadow -Wconversion}; no warnings are produced (\figref{fig:term-build}). \\
-GNU Make & Build automation & Targets \code{all}, \code{test}, \code{bench}, \code{format}, \code{install}, \code{clean}. \\
-libfuse 3 (3.14.0) & User-space file-system API & \code{fuse_main()} and a \code{struct fuse_operations} table with 16 callbacks in \code{fuse_main.c}; found through \code{pkg-config fuse3} \cite{libfuse,libfuseapi}. \\
+GNU Make & Build automation & Targets \code{all}, \code{unit}, \code{test}, \code{tsan}, \code{bench}, \code{format}, \code{install}, \code{clean}. \\
+libfuse 3 (3.14.0) & User-space file-system API & \code{fuse_main()} and a \code{struct fuse_operations} table with 17 callbacks in \code{fuse_main.c}; found through \code{pkg-config fuse3} \cite{libfuse,libfuseapi}. \\
 Linux FUSE module, \code{fusermount3} & Kernel bridge and mount helper & Routes VFS calls on the mount point to the SchedFS process; \code{fusermount3 -u} unmounts \cite{kernelfuse}. \\
 POSIX threads & Concurrency and synchronization & \code{pthread_create}/\code{join} for the dispatcher; mutexes and condition variables for the queue and request completion; \code{pthread_rwlock_t} per inode \cite{posix2017}. \\
-POSIX/Linux system calls & Storage access & \code{open}, \code{pread}, \code{pwrite}, \code{ftruncate}, \code{fsync}, \code{close}, \code{realpath}; \code{clock_gettime(CLOCK_MONOTONIC)} for timing \cite{kerrisk2010}. \\
-Bash and GNU coreutils & System testing & \code{tests/system.sh} uses \code{mountpoint}, \code{cmp}, \code{truncate}, \code{stat}, \code{timeout}. \\
-Python 3, pandas, Matplotlib & Analysis and graphs & \code{scripts/plot_results.py} reads \code{benchmark.csv} and writes the PNG charts in \code{results/} \cite{mckinney2010,hunter2007}. \\
+POSIX/Linux system calls & Storage access & \code{open} (optionally with \code{O_DIRECT}), \code{pread}, \code{pwrite}, \code{ftruncate}, \code{fsync}, \code{close}, \code{realpath}; \code{clock_gettime(CLOCK_MONOTONIC)} and \code{clock_nanosleep} for timing and the modeled service time \cite{kerrisk2010}. \\
+Bash and GNU coreutils & System testing, demo & \code{tests/system.sh} and \code{scripts/demo.sh} use \code{mountpoint}, \code{cmp}, \code{truncate}, \code{stat}, \code{timeout}. \\
+Python 3, Matplotlib & Experiments, analysis and graphs & \code{experiments.py} runs the mounted experiments; \code{analyze_run.py} and \code{report_results.py} compute percentiles and draw the charts in \code{results/mounted/}; \code{plot_results.py} charts the simulation \cite{hunter2007}. \\
 HTML, CSS, JavaScript & Interactive visualisation & \code{docs/index.html}: plain JavaScript (no framework) that ports \code{scheduler_pick()}; published with GitHub Pages. \\
-ThreadSanitizer (\code{-fsanitize=thread}) & Data-race detection & Used in this report to check the 4-thread core test (\figref{fig:term-tsan}) \cite{serebryany2009}. \\
+ThreadSanitizer (\code{-fsanitize=}\allowbreak\code{thread}) & Data-race detection & \code{make tsan} runs the core and regression tests under TSan \cite{serebryany2009}. \\
 clang-format & Code style & \code{.clang-format}: LLVM base style, 4-space indent, 100-column limit. \\
 Git and GitHub & Version control and hosting & Feature branches merged through pull requests (\figref{fig:github}); GitHub Pages hosts the demo. \\
-Docker (\code{ubuntu:24.04}) & Reproducible Linux test bed & All runs in this report were made in a container with \code{/dev/fuse}, as an unprivileged user. \\
+Docker (\code{ubuntu:24.04}) & Reproducible Linux test bed & \code{docker/Dockerfile}; the tests and experiments ran in this container on Docker Desktop with the WSL~2 kernel, with \code{/dev/fuse}, as an unprivileged user. \\
 \LaTeX{} (pdf\LaTeX, TikZ, PGFPlots) & Documentation & This report; all diagrams and charts are drawn from the project's data. \\
 \end{longtable}
 }
 
-\noindent\textbf{Why these choices.} C with POSIX threads gives direct control over memory layout, which matters for an on-disk format with fixed 128-byte inodes, and it uses the same synchronization primitives taught in the course. FUSE lets a file system run as an ordinary process, so it can be debugged and restarted without kernel programming and without risk to the host, at the cost of extra context switches per operation \cite{vangoor2017}. A single image file makes the disk a plain array of numbered blocks, so ``seek distance'' has a precise meaning. Python and a browser page are used only for analysis and presentation; they never touch the file system's data path.
+\noindent\textbf{Why these choices.} C with POSIX threads gives direct control over memory layout, which matters for an on-disk format with fixed 128-byte inodes, and it uses the same synchronization primitives taught in the course. FUSE lets a file system run as an ordinary process, so it can be debugged and restarted without kernel programming and without risk to the host, at the cost of extra context switches per operation \cite{vangoor2017}. A single image file makes the disk a plain array of numbered blocks, so modeled ``movement'' has a precise meaning. Python and a browser page are used only for analysis and presentation; they never touch the file system's data path.
 
 % =====================================================================
 \clearpage
@@ -578,7 +586,7 @@ Docker (\code{ubuntu:24.04}) & Reproducible Linux test bed & All runs in this re
 
 \subsection{System Architecture}
 \label{sec:arch}
-SchedFS is a strictly layered system (\figref{fig:arch}). A system call on the mount point travels through the Linux VFS \cite{love2010,bovet2005} and the FUSE kernel module to a libfuse worker thread inside the SchedFS process. The FUSE adapter forwards it to the inode and directory layer, which breaks it into 4~KiB block operations. Each block operation becomes a request in the bounded queue. Only after the scheduler has chosen it does the dispatcher thread perform the real \code{pread} or \code{pwrite} on \code{disk.img}. After the mount-time bootstrap read of the superblock, no other code touches the image, so the scheduler controls every byte of disk I/O.
+SchedFS is a strictly layered system (\figref{fig:arch}). A system call on the mount point travels through the Linux VFS \cite{love2010,bovet2005} and the FUSE kernel module to a libfuse worker thread inside the SchedFS process. The FUSE adapter forwards it to the inode and directory layer, which breaks it into 4~KiB block operations. Each block operation becomes a request in the bounded queue. Only after the scheduler has chosen it does the dispatcher thread perform the real \code{pread} or \code{pwrite} on \code{disk.img}. After the mount-time bootstrap read of the superblock, no other code touches the image, so the scheduler controls every byte of disk I/O. A small file operation is a chain of such requests: in the experiments one open + 4~KiB read + close issued about 11 block requests (path lookup, inode, data), one after another.
 
 \begin{figure}[H]
 \centering
@@ -591,11 +599,11 @@ SchedFS is a strictly layered system (\figref{fig:arch}). A system call on the m
   \node[box=6.8cm, below=of adp] (fsl) {\textbf{Path, directory and inode layer}\\\footnotesize \code{filesystem.c}};
   \node[box=6.8cm, below=of fsl] (map) {\textbf{Block mapping and allocation}\\\footnotesize \code{bmap}, free-block bitmap};
   \node[hbox=6.8cm, below=0.6cm of map] (q) {\textbf{Bounded request queue} --- \code{request_queue.c}\\\footnotesize one mutex, \code{not_empty}, \code{not_full}; capacity 128};
-  \node[hbox=6.8cm, below=of q] (sch) {\textbf{Scheduler} --- \code{scheduler.c}\\\footnotesize FCFS $\cdot$ SSTF $\cdot$ SCAN $\cdot$ Adaptive};
-  \node[hbox=6.8cm, below=of sch] (dsp) {\textbf{Dispatcher thread} --- \code{virtual_disk.c}};
+  \node[hbox=6.8cm, below=of q] (sch) {\textbf{Scheduler} --- \code{scheduler.c}\\\footnotesize FCFS $\cdot$ SSTF $\cdot$ SCAN $\cdot$ LOOK $\cdot$ Adaptive $\cdot$ Deadline};
+  \node[hbox=6.8cm, below=of sch] (dsp) {\textbf{Dispatcher thread} --- \code{virtual_disk.c}\\\footnotesize \code{scheduler_advance}; optional modeled service time};
   \node[store, below=0.5cm of dsp] (img) {\code{disk.img}};
-  \node[box=3.1cm, right=0.75cm of dsp] (met) {\textbf{Metrics, logger}\\\footnotesize \code{filesystem.log}};
-  \node[box=3.1cm, right=0.75cm of sch] (bench) {\textbf{\code{schedfs-bench}}\\\footnotesize trace replay};
+  \node[box=3.1cm, right=0.75cm of dsp] (met) {\textbf{Metrics, trace, logger}\\\footnotesize \code{filesystem.log}};
+  \node[box=3.1cm, right=0.75cm of sch] (bench) {\textbf{\code{schedfs-bench}}\\\footnotesize simulation, simulated clock};
   \node[box=3.1cm, right=2.2cm of img] (mk) {\textbf{\code{mkfs.schedfs}}\\\footnotesize formats the image};
   \foreach \a/\b in {app/vfs,vfs/dev,dev/lib,lib/adp,adp/fsl,fsl/map,sch/dsp}
     \draw[arr] (\a) -- (\b);
@@ -618,7 +626,7 @@ SchedFS is a strictly layered system (\figref{fig:arch}). A system call on the m
 \label{fig:arch}
 \end{figure}
 
-\figref{fig:deps} shows the component architecture as a dependency graph of the source modules. Arrows point from a module to the module whose interface it calls. The graph has no cycles: the scheduler depends only on the request definition, which is why the benchmark and the unit test can reuse it without a file system.
+\figref{fig:deps} shows the component architecture as a dependency graph of the source modules. Arrows point from a module to the module whose interface it calls. The graph has no cycles: the scheduler depends only on the request definition, which is why the simulation and the unit test can reuse it without a file system. The workload generator (\code{workload.c}) and the experiment scripts are not linked to SchedFS at all; they use it through a mount point, like any other program.
 
 \begin{figure}[H]
 \centering
@@ -627,12 +635,12 @@ SchedFS is a strictly layered system (\figref{fig:arch}). A system call on the m
   \node[m, below=of fuse] (fs) {M3/M4 file-system core\\\code{filesystem.c}};
   \node[m, below=of fs] (vd) {M7 virtual disk\\\code{virtual_disk.c}};
   \node[m, below=of vd] (rq) {M5 request queue\\\code{request_queue.c}};
-  \node[m, below=of rq] (sc) {M6 scheduler\\\code{scheduler.c}};
+  \node[m, below=of rq] (sc) {M6 scheduler, simulator\\\code{scheduler.c}, \code{sim.c}};
   \node[m, left=1.1cm of fuse] (mk) {M1 formatter\\\code{mkfs.c}};
   \node[m, below=of mk] (lay) {on-disk format\\\code{layout.h}};
   \node[m, right=1.1cm of vd] (met) {M8 metrics, logger\\\code{metrics.c}, \code{logger.c}};
-  \node[m, right=1.1cm of sc] (bn) {M9 benchmark\\\code{benchmark_main.c}};
-  \node[m, right=1.1cm of fuse] (tc) {M10 \code{test_core}};
+  \node[m, right=1.1cm of sc] (bn) {M9 simulation\\{\scriptsize\code{benchmark_main.c}}};
+  \node[m, right=1.1cm of fuse] (tc) {M10 \code{test_core}, \code{test_regress}};
   \node[m, right=1.1cm of rq] (ts) {M10 \code{test_scheduler}};
   \node[m, left=1.1cm of sc] (csv) {data file\\\code{benchmark.csv}};
   \node[m, above=0.55cm of csv] (py) {M9 \code{plot_results.py}};
@@ -733,7 +741,7 @@ A 16~MiB image holds 4{,}096 blocks of 4{,}096 bytes (\figref{fig:layout}). Bloc
 \label{tab:superblock}
 \small
 \setlength{\tabcolsep}{4.5pt}
-\begin{tabular}{@{}r l l l@{}}
+\begin{tabularx}{\linewidth}{@{}r l l X@{}}
 \toprule
 \textbf{Offset} & \textbf{Field} & \textbf{Value} & \textbf{Meaning} \\
 \midrule
@@ -749,7 +757,7 @@ A 16~MiB image holds 4{,}096 blocks of 4{,}096 bytes (\figref{fig:layout}). Bloc
 44 & \code{data_start} & \code{0xa} = 10 & first data block \\
 48 & \code{root_inode} & 1 & inode number of \code{/} \\
 \bottomrule
-\end{tabular}
+\end{tabularx}
 \end{table}
 
 Each inode uses \emph{indexed allocation} with twelve direct pointers and one single-indirect pointer (\figref{fig:inode}), following the classic UNIX inode design \cite{bach1986}. The indirect block holds 1{,}024 four-byte block numbers, so a file can have $12 + 1024 = 1036$ blocks, or about 4.05~MiB. A pointer of zero marks a hole: reading it returns zeros without allocating a block, which is how a sparse \code{truncate} works.
@@ -801,7 +809,7 @@ The formatter performs every check before it writes anything (\figref{fig:fc-mkf
   \node[dec=3.0cm, below=0.35cm of s] (d1) {Size valid? multiple of 4096, 64 to $2^{32}-1$ blocks};
   \node[proc=3.2cm, right=1.2cm of d1] (e1) {Print size error;\\exit 2};
   \node[proc=5.0cm, below=0.35cm of d1] (c) {Compute layout: bitmap blocks, 8 inode blocks, \code{data_start}};
-  \node[dec=3.3cm, below=0.35cm of c] (d2) {\code{open(O_CREAT|O_EXCL)} succeeded?};
+  \node[dec=3.3cm, below=0.35cm of c] (d2) {\code{open} with \code{O_EXCL} succeeded?};
   \node[proc=3.2cm, right=1.2cm of d2] (e2) {``File exists'';\\exit 1};
   \node[proc=5.0cm, below=0.35cm of d2] (w1) {\code{ftruncate} to SIZE; write superblock (block 0)};
   \node[proc=5.0cm, below=of w1] (w2) {Write bitmap: blocks 0 to \code{data_start} marked used};
@@ -821,7 +829,7 @@ The formatter performs every check before it writes anything (\figref{fig:fc-mkf
 \end{figure}
 
 \subsubsection{Path resolution and the write path (M3, M4)}
-Paths are resolved from the root, one component at a time (\figref{fig:fc-resolve}). A write (\figref{fig:fc-write}) holds the file's inode lock in exclusive mode, maps each logical block with \code{bmap(create = true)}, and reads the old block first only when the write covers part of it (read--modify--write). Size and modification time are written back once, at the end.
+Paths are resolved from the root, one component at a time (\figref{fig:fc-resolve}), while the namespace lock is held for reading; \code{lookup_locked()} releases it only after the target inode's lock is taken (Section~\ref{sec:locking}). A write (\figref{fig:fc-write}) holds the file's inode lock in exclusive mode, maps each logical block with \code{bmap(create = true)}, and reads the old block first only when the write covers part of it (read--modify--write). Size and modification time are written back once, at the end.
 
 \begin{figure}[H]
 \centering
@@ -852,7 +860,7 @@ Paths are resolved from the root, one component at a time (\figref{fig:fc-resolv
   \node[term] (s) {\code{sfs_write(path, buf, size, off)}};
   \node[dec=2.3cm, below=0.3cm of s] (d0) {off + size $\le$ 1036 blocks?};
   \node[proc=1.3cm, right=0.35cm of d0] (e0) {\code{-EFBIG}};
-  \node[proc=3.6cm, below=0.3cm of d0] (r) {\code{resolve}; take inode write lock; read inode};
+  \node[proc=3.6cm, below=0.3cm of d0] (r) {\code{lookup_locked}: resolve, take inode write lock, read inode};
   \node[dec=2.3cm, below=0.3cm of r] (d1) {more bytes to write?};
   \node[proc=3.6cm, below=0.3cm of d1] (bm) {\code{bmap(create=true)} $\rightarrow$ physical block (allocate if needed)};
   \node[dec=2.3cm, below=0.3cm of bm] (d2) {partial block?};
@@ -874,7 +882,7 @@ Paths are resolved from the root, one component at a time (\figref{fig:fc-resolv
 \end{figure}
 
 \subsubsection{Block allocator (M4)}
-\code{alloc_block()} looks for a free bit starting from a \emph{hint}: the physical block that holds the file's previous logical block (\figref{fig:fc-alloc}). Consecutive blocks of a file are therefore usually adjacent on disk. This keeps seek distances small for sequential access and makes the effect of scheduling easier to see. The Berkeley Fast File System applies the same locality principle \cite{mckusick1984}. The bitmap and superblock are written to disk before the block is used, and a failed write rolls the in-memory state back.
+\code{alloc_block()} looks for a free bit starting from a \emph{hint}: the physical block that holds the file's previous logical block (\figref{fig:fc-alloc}). Consecutive blocks of a file are therefore usually adjacent on disk. This keeps seek distances small for sequential access and makes the effect of scheduling easier to see. The Berkeley Fast File System applies the same locality principle \cite{mckusick1984}. The bitmap and superblock are written to disk before the block is used, and a failed write rolls the in-memory state back. A crash in between can leak a block but cannot make two files share one; there is no journal, so crash consistency is not claimed.
 
 \begin{figure}[H]
 \centering
@@ -944,7 +952,7 @@ The queue is the classic bounded buffer: producers wait while it is full, the co
 \end{figure}
 
 \subsubsection{Disk scheduler (M6)}
-\code{scheduler_pick()} is a pure function: it reads the pending requests, the head position, the SCAN direction and the current time, and returns an index (\figref{fig:fc-sched}). It neither sleeps nor performs I/O, so it can run under the queue mutex and can be tested on its own. The four policies differ only in how they rank candidates; all of them break ties by arrival time and then request ID, which makes the service order deterministic.
+\code{scheduler_pick()} is a pure function: it reads the pending requests, the head position, the SCAN/LOOK direction and the current time, and returns an index (\figref{fig:fc-sched}). It neither sleeps nor performs I/O, so it can run under the queue mutex, and because the current time is an argument, tests and the simulator can drive it with a simulated clock. The six policies differ only in how they rank candidates; all of them break ties by arrival time and then request ID, which makes the service order deterministic. A second function, \code{scheduler_advance()}, moves the head to the chosen block and returns the modeled movement (Section~\ref{sec:movement}); it is the only definition of movement, used by the dispatcher, the simulator and the tests.
 
 \begin{figure}[H]
 \centering
@@ -954,11 +962,15 @@ The queue is the classic bounded buffer: producers wait while it is full, the co
   \node[proc=4.4cm, right=0.8cm of d1] (a1) {choose the \textbf{oldest} request (arrival time, then ID)};
   \node[dec=2.6cm, below=0.35cm of d1] (d2) {policy = SSTF?};
   \node[proc=4.4cm, right=0.8cm of d2] (a2) {choose the \textbf{smallest} $|\text{head} - \text{block}|$; tie $\rightarrow$ oldest};
-  \node[dec=2.6cm, below=0.35cm of d2] (d3) {policy = SCAN?};
+  \node[dec=2.6cm, below=0.35cm of d2] (d3) {SCAN or LOOK?};
   \node[dec=2.4cm, right=0.8cm of d3] (d4) {any request in current direction?};
   \node[proc=2.9cm, above right=0.0cm and 0.55cm of d4] (a3) {nearest request in that direction};
   \node[proc=2.9cm, below right=0.0cm and 0.55cm of d4] (a4) {nearest overall (direction will reverse)};
-  \node[proc=5.0cm, below=0.6cm of d3] (a5) {\textbf{Adaptive}: $w_{\max} \leftarrow$ largest wait in queue\\[2pt]
+  \node[dec=2.6cm, below=2.2cm of d3] (d5) {policy = Deadline?};
+  \node[dec=2.4cm, right=0.8cm of d5] (d6) {any request overdue?};
+  \node[proc=2.9cm, above right=0.0cm and 0.55cm of d6] (a7) {overdue request with the \textbf{earliest deadline}};
+  \node[proc=2.9cm, below right=0.0cm and 0.55cm of d6] (a8) {\textbf{nearest} block (as SSTF)};
+  \node[proc=5.0cm, below=1.2cm of d5] (a5) {\textbf{Adaptive}: $w_{\max} \leftarrow$ largest wait in queue\\[2pt]
      score $= \alpha\, \dfrac{|\text{head}-\text{block}|}{N} - \beta\, \dfrac{\text{wait}}{w_{\max}}$};
   \node[proc=5.0cm, below=of a5] (a6) {choose the \textbf{lowest score}; tie $\rightarrow$ oldest};
   \coordinate (bus) at ($(a4.east)+(0.5,0)$);
@@ -971,18 +983,22 @@ The queue is the classic bounded buffer: producers wait while it is full, the co
   \draw[arr] (d3) -- node[lab, above] {yes} (d4);
   \draw[arr] (d4.north) |- node[lab, pos=0.3, left] {yes} (a3.west);
   \draw[arr] (d4.south) |- node[lab, pos=0.3, left] {no} (a4.west);
-  \draw[arr] (d3) -- node[lab, right] {no} (a5);
+  \draw[arr] (d3) -- node[lab, right] {no} (d5);
+  \draw[arr] (d5) -- node[lab, above] {yes} (d6);
+  \draw[arr] (d6.north) |- node[lab, pos=0.3, left] {yes} (a7.west);
+  \draw[arr] (d6.south) |- node[lab, pos=0.3, left] {no} (a8.west);
+  \draw[arr] (d5) -- node[lab, right] {no} (a5);
   \draw[arr] (a5) -- (a6);
   \draw[arr] (a6) -- (t);
-  \foreach \n in {a1,a2,a3,a4} \draw (\n.east) -- (\n.east -| bus);
+  \foreach \n in {a1,a2,a3,a4,a7,a8} \draw (\n.east) -- (\n.east -| bus);
   \draw[arr] (a1.east -| bus) -- (t.north);
 \end{tikzpicture}
-\caption{Decision logic of \code{scheduler_pick()} for the four policies.}
+\caption{Decision logic of \code{scheduler_pick()} for the six policies. A request is overdue when its deadline (arrival + read or write deadline) is not later than the current time.}
 \label{fig:fc-sched}
 \end{figure}
 
-\subsubsection{Dispatcher (M7) and benchmark replay (M9)}
-The dispatcher is the only consumer (\figref{fig:fc-dispatch}, left). After each transfer it records the seek distance and waiting time, moves the head to the served block, reverses the SCAN direction when the head has turned back, and wakes the waiting caller. The benchmark (\figref{fig:fc-dispatch}, right) reuses the same \code{scheduler_pick()} on fixed traces. All requests arrive at the start, so every policy sees identical input.
+\subsubsection{Dispatcher (M7) and simulation (M6, M9)}
+The dispatcher is the only consumer (\figref{fig:fc-dispatch}, left). For each request it stamps the service start, moves the head with \code{scheduler_advance()} (which also reverses the SCAN/LOOK direction), performs the transfer, and, in the \emph{model} configuration, holds the request until $100\,\mu s + 0.25\,\mu s \times$ movement has passed since the start. It then records the queue wait, movement and queue depth, appends a trace row if \code{--trace} was given, and wakes the waiting caller. The simulation (\figref{fig:fc-dispatch}, right) runs the same \code{scheduler_pick()} and \code{scheduler_advance()} with a simulated clock: requests arrive at given times, wait in a bounded queue, and each service lasts a modeled time. Nothing reads the wall clock, so every policy, including the time-dependent Adaptive and Deadline policies, gives the same result on every run. Its output is labelled as simulation; it says nothing about the file system or a real disk.
 
 \begin{figure}[H]
 \centering
@@ -992,32 +1008,35 @@ The dispatcher is the only consumer (\figref{fig:fc-dispatch}, left). After each
   \node[proc=3.6cm, below=0.3cm of s] (t) {$r \leftarrow$ \code{rq_take()} (sleeps while empty)};
   \node[dec=2.0cm, below=0.3cm of t] (d) {$r$ = \code{NULL}?};
   \node[term, right=0.5cm of d] (x) {exit};
-  \node[proc=3.6cm, below=0.3cm of d] (io) {\code{full_pio}: \code{pread}/\code{pwrite} 4096 B at block $\times$ 4096};
-  \node[proc=3.6cm, below=of io] (m) {\code{metrics_record}(head, block, wait)};
-  \node[proc=3.6cm, below=of m] (h) {update SCAN direction; head $\leftarrow$ block};
-  \node[proc=3.6cm, below=of h] (sg) {lock $r$; completed $\leftarrow$ true; signal \code{completed_cv}};
+  \node[proc=3.6cm, below=0.3cm of d] (h) {stamp start; move $\leftarrow$\\\code{scheduler_advance}};
+  \node[proc=3.6cm, below=of h] (io) {\code{serve}: \code{pread}/\code{pwrite} 4096 B (bounce buffer if \code{O_DIRECT})};
+  \node[proc=3.6cm, below=of io] (md) {model: wait until start $+$ base $+$ per-block $\times$ move};
+  \node[proc=3.6cm, below=of md] (m) {\code{metrics_record}; trace row};
+  \node[proc=3.6cm, below=of m] (sg) {lock $r$; completed $\leftarrow$ true; signal \code{completed_cv}};
   \draw[arr] (s) -- (t); \draw[arr] (t) -- (d); \draw[arr] (d) -- node[lab, above] {yes} (x);
-  \draw[arr] (d) -- node[lab, right] {no} (io); \draw[arr] (io) -- (m); \draw[arr] (m) -- (h); \draw[arr] (h) -- (sg);
+  \draw[arr] (d) -- node[lab, right] {no} (h); \draw[arr] (h) -- (io); \draw[arr] (io) -- (md); \draw[arr] (md) -- (m); \draw[arr] (m) -- (sg);
   \draw[arr] (sg.west) -- ++(-0.35,0) |- (t.west);
 \end{tikzpicture}
 \end{minipage}\hfill
 \begin{minipage}[t]{0.48\linewidth}\centering
 \begin{tikzpicture}[node distance=0.3cm]
-  \node[term] (s) {\code{schedfs-bench --all}};
-  \node[proc=3.6cm, below=0.3cm of s] (l) {for each of 5 traces and each of 4 policies};
-  \node[proc=3.6cm, below=of l] (i) {all requests pending; head $= 53$, direction $= -1$};
-  \node[proc=3.6cm, below=of i] (p) {$k \leftarrow$ \code{scheduler_pick()}};
-  \node[proc=3.6cm, below=of p] (mv) {add head movement (SCAN adds travel to the edge); record wait};
-  \node[proc=3.6cm, below=of mv] (sd) {seek delay $10\,\mu s + 2\,\mu s \times$ blocks};
-  \node[dec=2.0cm, below=0.3cm of sd] (d) {pending?};
-  \node[proc=3.6cm, below=0.3cm of d] (w) {write one CSV row (10 metrics)};
-  \draw[arr] (s) -- (l); \draw[arr] (l) -- (i); \draw[arr] (i) -- (p); \draw[arr] (p) -- (mv); \draw[arr] (mv) -- (sd); \draw[arr] (sd) -- (d);
-  \draw[arr] (d.east) -- node[lab, above] {yes} ++(0.5,0) |- (p.east);
-  \draw[arr] (d) -- node[lab, right] {no} (w);
-  \draw[arr] (w.west) -- ++(-0.35,0) |- (l.west);
+  \node[term] (s) {\code{sim_run} (simulated clock $t$)};
+  \node[proc=3.6cm, below=0.3cm of s] (l) {admit arrivals with time $\le t$ while the queue has space};
+  \node[dec=2.0cm, below=0.3cm of l] (e) {queue empty?};
+  \node[proc=1.6cm, right=0.35cm of e] (idle) {$t \leftarrow$ next arrival};
+  \node[proc=3.6cm, below=0.3cm of e] (p) {$k \leftarrow$ \code{scheduler_pick}(\ldots, $t$); wait $= t -$ arrival};
+  \node[proc=3.6cm, below=of p] (mv) {move $\leftarrow$\\\code{scheduler_advance}};
+  \node[proc=3.6cm, below=of mv] (sd) {$t \leftarrow t +$ base $+$ per-block $\times$ move};
+  \node[dec=2.0cm, below=0.3cm of sd] (d) {all served?};
+  \node[proc=3.6cm, below=0.3cm of d] (w) {movement, waits, makespan};
+  \draw[arr] (s) -- (l); \draw[arr] (l) -- (e); \draw[arr] (e) -- node[lab, above] {yes} (idle);
+  \draw[arr] (idle.north) |- (l.east);
+  \draw[arr] (e) -- node[lab, right] {no} (p); \draw[arr] (p) -- (mv); \draw[arr] (mv) -- (sd); \draw[arr] (sd) -- (d);
+  \draw[arr] (d) -- node[lab, right] {yes} (w);
+  \draw[arr] (d.west) -- node[lab, above] {no} ++(-0.5,0) |- (l.west);
 \end{tikzpicture}
 \end{minipage}
-\caption{Dispatcher service loop (left) and benchmark replay loop (right).}
+\caption{Dispatcher service loop (left) and the deterministic simulation loop (right). Both use the same \code{scheduler_pick()} and \code{scheduler_advance()}.}
 \label{fig:fc-dispatch}
 \end{figure}
 
@@ -1056,6 +1075,8 @@ The dispatcher is the only consumer (\figref{fig:fc-dispatch}, left). After each
 \label{fig:seq}
 \end{figure}
 
+\noindent\textbf{Locks held while a request waits.} The FUSE worker in \figref{fig:seq} is usually holding file-system locks while it sleeps on \code{completed_cv}: a read holds the inode's lock in shared mode for the whole operation, a write or truncate holds it in exclusive mode, create, mkdir, unlink, rmdir and rename hold \code{ns_lock} in write mode while they read and write directory blocks, and metadata updates hold \code{inode_table_lock}, \code{bitmap_io_lock} or \code{super_io_lock} across the write of that block. A lookup holds \code{ns_lock} in read mode only until it has the inode lock. None of these locks is needed by the dispatcher, which takes only the queue mutex (released before the transfer) and the request's own mutex, so a waiting thread can never block the thread that will wake it. The cost is that a long namespace operation delays lookups of other paths; this is accepted for simplicity.
+
 \tabref{tab:interact} lists the interfaces through which the modules exchange information.
 
 \begin{table}[H]
@@ -1072,10 +1093,12 @@ M2 $\rightarrow$ M3 & \code{sfs_getattr}, \code{sfs_read}, \code{sfs_write}, \ld
 M3 $\rightarrow$ M4 & \code{bmap}, \code{alloc_block}, \code{free_block} & inode, logical block, create flag $\rightarrow$ physical block \\
 M3/M4 $\rightarrow$ M7 & \code{vdisk_read}, \code{vdisk_write} & block number, 4 KiB buffer pointer \\
 M7 $\rightarrow$ M5 & \code{rq_submit}, \code{request_wait}, \code{rq_take} & pointer to \code{disk_request_t} \\
-M5 $\rightarrow$ M6 & \code{scheduler_pick} & pending array, head, direction, time $\rightarrow$ index \\
-M7 $\rightarrow$ M8 & \code{metrics_record}, \code{sfs_log} & from-block, to-block, wait (ms); log text \\
-M9 $\rightarrow$ M6 & \code{scheduler_pick} & fixed traces $\rightarrow$ service order \\
-M9 $\rightarrow$ files & \code{benchmark.csv} $\rightarrow$ \code{plot_results.py} & 10 metrics per (workload, policy) \\
+M5 $\rightarrow$ M6 & \code{scheduler_pick} & pending array, head, direction, deadlines, time $\rightarrow$ index \\
+M7 $\rightarrow$ M6 & \code{scheduler_advance} & chosen block $\rightarrow$ modeled movement; new head and direction \\
+M7 $\rightarrow$ M8 & \code{metrics_record}, \code{sfs_log} & movement, wait (ms), queue depth; log text \\
+M7 $\rightarrow$ files & \code{--trace} CSV & one row per served request: id, client, op, block, from, move, depth, arrival, start, end \\
+M9 $\rightarrow$ M6 & \code{sim_run} & timed arrivals, service model $\rightarrow$ order, waits, movement \\
+M9 $\rightarrow$ mount & \code{schedfs-workload} & ordinary system calls; per-operation latency and background bytes \\
 \bottomrule
 \end{tabularx}
 \end{table}
@@ -1085,7 +1108,7 @@ M9 $\rightarrow$ files & \code{benchmark.csv} $\rightarrow$ \code{plot_results.p
 \label{sec:osconcepts}
 
 \subsubsection{Disk scheduling}
-Each policy answers one question: \emph{which pending request should the head serve next?} \cite{teorey1972,silberschatz2018,stallings2018} \tabref{tab:policies} summarises the four answers. \figref{fig:headplot} plots the head position over time for the textbook trace (head at block 53, queue 98, 183, 37, 122, 14, 124, 65, 67 on a 200-block disk), using the exact service orders checked by \code{tests/test_scheduler.c}.
+Each policy answers one question: \emph{which pending request should the head serve next?} \cite{teorey1972,silberschatz2018,stallings2018} \tabref{tab:policies} summarises the six answers. \figref{fig:headplot} plots the head position over time for the textbook trace (head at block 53, queue 98, 183, 37, 122, 14, 124, 65, 67 on a 200-block disk), using the exact service orders checked by \code{tests/test_scheduler.c}.
 
 \begin{table}[H]
 \centering
@@ -1096,10 +1119,12 @@ Each policy answers one question: \emph{which pending request should the head se
 \toprule
 \textbf{Policy} & \textbf{Chooses next} & \textbf{Strength} & \textbf{Weakness} \\
 \midrule
-FCFS & the oldest request & fair; no starvation & ignores head position, so seeks are long \\
-SSTF & the request nearest the head & short seeks & far requests can starve \\
-SCAN & the nearest request in the current direction; reverses at the edge & sweeps evenly; bounded wait & extra travel to the edge \\
-Adaptive & lowest $\alpha \cdot d/N - \beta \cdot w/w_{\max}$ & tunable between SSTF ($\beta = 0$) and age priority & sensitive to the scale of $d$ and $w$ \\
+FCFS & the oldest request & fair within the queue; never starves a request & ignores position; a small read waits behind every queued write \\
+SSTF & the request nearest the head & least movement & distant requests can starve while nearby work keeps arriving \\
+SCAN & the nearest request in the current direction; travels to the disk edge before reversing & sweeps evenly & extra travel to the edge, charged in the movement model \\
+LOOK & as SCAN, but reverses at the last request & SCAN's sweep without the edge trip & a request just behind the head waits for a full sweep \\
+Adaptive & lowest $\alpha \cdot d/N - \beta \cdot w/w_{\max}$ (heuristic baseline) & blends distance and age & age term bounded by $\beta$: distant requests can starve (Section~\ref{sec:adaptive}) \\
+Deadline & overdue requests first, earliest deadline first; otherwise the nearest block & reads served promptly; writes ordered by locality for a short window; nothing overtaken indefinitely & gives up part of SSTF's locality; non-preemptive, so not a real-time guarantee \\
 \bottomrule
 \end{tabularx}
 \end{table}
@@ -1108,8 +1133,8 @@ Adaptive & lowest $\alpha \cdot d/N - \beta \cdot w/w_{\max}$ & tunable between 
 \centering
 \begin{tikzpicture}
 \begin{groupplot}[
-    group style={group size=3 by 1, horizontal sep=0.55cm, yticklabels at=edge left},
-    width=5.6cm, height=6.4cm, xmin=-5, xmax=205, ymin=-0.5, ymax=9.5, y dir=reverse,
+    group style={group size=4 by 1, horizontal sep=0.45cm, yticklabels at=edge left},
+    width=4.55cm, height=6.4cm, xmin=-5, xmax=205, ymin=-0.5, ymax=9.5, y dir=reverse,
     xtick={0,50,100,150,200}, ytick={0,...,9},
     xlabel={block number}, tick label style={font=\scriptsize}, label style={font=\scriptsize},
     title style={font=\small\bfseries}, grid=major, grid style={gray!20},
@@ -1120,28 +1145,63 @@ Adaptive & lowest $\alpha \cdot d/N - \beta \cdot w/w_{\max}$ & tunable between 
     \addplot[blue!70!black] coordinates {(53,0)(65,1)(67,2)(37,3)(14,4)(98,5)(122,6)(124,7)(183,8)};
   \nextgroupplot[title={SCAN: 236 blocks}]
     \addplot[orange!85!black] coordinates {(53,0)(37,1)(14,2)(0,2.5)(65,3.5)(67,4.5)(98,5.5)(122,6.5)(124,7.5)(183,8.5)};
+  \nextgroupplot[title={LOOK: 208 blocks}]
+    \addplot[brown!80!black] coordinates {(53,0)(37,1)(14,2)(65,3)(67,4)(98,5)(122,6)(124,7)(183,8)};
 \end{groupplot}
 \end{tikzpicture}
-\caption{Head movement for the textbook trace. SCAN first moves towards block 0 and reaches the edge before reversing.}
+\caption{Head movement for the textbook trace. SCAN first moves towards block 0 and reaches the edge before reversing; LOOK reverses at block 14. The Deadline policy gives the SSTF order with very long deadlines and the FCFS order with zero deadlines (all requests here are pending at once).}
 \label{fig:headplot}
 \end{figure}
 
-\noindent The totals follow directly from the orders. For FCFS: $|98-53| + |183-98| + |37-183| + |122-37| + |14-122| + |124-14| + |65-124| + |67-65| = 45 + 85 + 146 + 85 + 108 + 110 + 59 + 2 = 640$. For SSTF: $12 + 2 + 30 + 23 + 84 + 24 + 2 + 59 = 236$. For SCAN, moving down first: $53 + 183 = 236$ (down to block~0, then up to block~183).
+\noindent The totals follow directly from the orders. For FCFS: $|98-53| + |183-98| + |37-183| + |122-37| + |14-122| + |124-14| + |65-124| + |67-65| = 45 + 85 + 146 + 85 + 108 + 110 + 59 + 2 = 640$. For SSTF: $12 + 2 + 30 + 23 + 84 + 24 + 2 + 59 = 236$. For SCAN, moving down first: $53 + 183 = 236$ (down to block~0, then up to block~183). For LOOK: $39 + 169 = 208$ (down to block~14, then up to block~183).
 
-\subsubsection{The Adaptive policy and ageing}
-SSTF minimises seek distance but can starve a request far from the head. FCFS never starves, but it ignores position. The Adaptive policy combines both quantities in one score:
+\subsubsection{The movement model: SCAN versus LOOK}
+\label{sec:movement}
+``Movement'' is a model: the number of blocks between two served requests, as if a disk head moved over block numbers. Before this version the mounted dispatcher charged only the distance between served blocks, while the unit test and the benchmark charged SCAN for its travel to the disk edge, so the same textbook trace gave 208 blocks in the mounted metrics and 236 in the test (review finding~A). Movement is now defined once, in \code{scheduler_advance()}, and used by the dispatcher, the simulator and the tests. SCAN and LOOK are separate policies with the same selection rule: SCAN is charged the trip to the edge when it reverses (236 on the textbook trace), LOOK is not (208). \code{tests/test_regress.c} checks 236 (SCAN), 208 (LOOK) and 640 (FCFS) through the real dispatcher. In the \emph{model} configuration of the experiments the service time depends on movement, so SCAN's edge trips cost real (modeled) time; this is why SCAN is an outlier in Section~\ref{sec:mountedres}.
+
+\subsubsection{Deadline scheduling}
+\label{sec:deadline}
+Each request receives a \emph{service-start deadline}:
+\begin{equation}
+\text{deadline}(r) =
+\begin{cases}
+\text{arrival}(r) + D_{\text{read}} & \text{for reads (default } D_{\text{read}} = 0\text{ ms)},\\
+\text{arrival}(r) + D_{\text{write}} & \text{for writes (default } D_{\text{write}} = 2\text{ ms)}.
+\end{cases}
+\label{eq:deadline}
+\end{equation}
+At each decision, if any pending request is overdue (deadline $\le$ now), the one with the earliest deadline is served, ties by arrival and then ID; otherwise the nearest block to the head is served, as in SSTF. With both deadlines at 0 the policy is FCFS; with very long deadlines it is SSTF. With the defaults every read is overdue as soon as it arrives, so reads are served oldest first; a write that has waited less than 2~ms can be passed by reads and by nearer writes, and after 2~ms it is served in deadline order. Locality is therefore used only within a short window. Classification is by operation type only (read or write of a block), which the request already carries; there is no filename rule and no per-process priority. Deadline scheduling is an established approach: the Linux deadline I/O scheduler also gives reads and writes separate expiry times. The contribution here is the implementation in SchedFS's request path, its tuning, and its evaluation against the other policies on the same mounted workloads.
+
+\noindent\textbf{What is guaranteed, and under which conditions.}
+\begin{itemize}[leftmargin=1.4em]
+  \item \emph{Within one operation type} every deadline is arrival plus the same constant, so a later arrival of that type can never overtake an overdue request of that type (tested by \code{test_deadline_order} and \code{test_starvation}).
+  \item \emph{Across types}, a read can overtake an overdue write only if the read's deadline is earlier, that is, if the read arrived before the write's deadline minus $D_{\text{read}}$. Reads arriving later cannot overtake it, so a continuous stream of reads does not starve a write (tested with a 50~ms write deadline: a distant write amid continuous nearby reads starts at 50.05~ms).
+  \item \emph{Bound on the start time.} Once a request $R$ is overdue, the requests served before it are the one already in service (the dispatcher is non-preemptive) and pending requests with earlier deadlines. With a queue of capacity $Q$ there are at most $Q - 1$ of those, plus requests from $P$ producers blocked at admission. $R$ therefore starts no later than $\text{deadline}(R) + (Q - 1 + P)\,S_{\max} + S_{\text{current}}$, where $S_{\max}$ is the longest service time and $S_{\text{current}}$ the remaining time of the request in service.
+  \item \emph{This is not a real-time guarantee.} A deadline marks when a request becomes urgent, not when it completes. Under overload every request becomes overdue and the policy degrades to earliest-deadline-first, which is FCFS within each type; queues and waits grow as under any policy, and the bounded queue blocks producers instead of using unbounded memory.
+  \item \emph{Operations are chains of requests.} A file operation issues several block requests one after another, so its latency is a sum of request waits and can exceed any single deadline. This is why a small read deadline matters more than a large one (Section~\ref{sec:tuning}).
+\end{itemize}
+
+\subsubsection{The Adaptive policy: a bounded age term}
+\label{sec:adaptive}
+SSTF minimises movement but can starve a request far from the head. FCFS never starves, but it ignores position. The Adaptive policy combines both quantities in one score:
 \begin{equation}
 \text{score}(r) \;=\; \alpha \,\frac{|\text{head} - \text{block}(r)|}{N} \;-\; \beta \,\frac{\text{now} - \text{arrival}(r)}{w_{\max}},
 \label{eq:adaptive}
 \end{equation}
-where $N$ is the number of blocks on the disk, $w_{\max}$ is the longest current wait in the queue, and the request with the lowest score is served. Both terms are normalised to $[0,1]$. With $\beta = 0$ the policy is exactly SSTF. As $\beta$ grows, waiting time increasingly outweighs distance---a form of \emph{ageing}, the standard remedy for starvation \cite{silberschatz2018}. The defaults are $\alpha = 0.7$ and $\beta = 0.3$.
+where $N$ is the number of blocks on the disk, $w_{\max}$ is the longest current wait in the queue, and the request with the lowest score is served. The defaults are $\alpha = 0.7$ and $\beta = 0.3$; with $\beta = 0$ the policy is exactly SSTF.
+
+The earlier version of this report described the age term as \emph{ageing} that prevents starvation. That claim was wrong (review finding~C). Because the wait is divided by $w_{\max}$, the age term of any request lies between $0$ and $\beta$, however long the request has waited: the oldest request gets exactly $\beta$, and waiting longer does not increase its advantage. A request $r$ whose distance term exceeds that of a nearby request $q$ by more than $\beta$ therefore always loses to $q$:
+\[
+\alpha\,\frac{d(r) - d(q)}{N} > \beta \quad\Longrightarrow\quad \text{score}(r) > \text{score}(q)\ \text{whatever the waits.}
+\]
+So a request more than $(\beta/\alpha)\,N \approx 0.43\,N$ blocks farther from the head than the nearby work is never chosen while nearby work keeps arriving. \code{test_adaptive_bound} reproduces this: with $N = 4{,}096$, an old request 3{,}000 blocks from the head, competing with a fresh request next to the head at every decision, is chosen 0 times in 10{,}000 decisions, while in \code{test_starvation} a request 1{,}200 blocks away is chosen at once. Adaptive is kept as a documented \emph{heuristic baseline} with no starvation guarantee; the Deadline policy is the one with a stated bound.
 
 \subsubsection{Synchronization: bounded buffer, completion and reader--writer locks}
 SchedFS uses three synchronization patterns from the course \cite{arpaci2018,posix2017,lewis1996,condwait}:
 \begin{enumerate}[leftmargin=1.6em]
   \item \textbf{Bounded buffer (producer--consumer).} Many FUSE worker threads produce requests and one dispatcher consumes them. A mutex protects the array; condition variables \code{not_full} and \code{not_empty} block producers and the consumer respectively (\figref{fig:fc-queue}).
   \item \textbf{Completion signalling.} Each request carries its own mutex, condition variable and \code{completed} flag. The caller waits in \code{while (!completed) pthread_cond_wait(...)}, so a spurious wake-up is harmless and a signal cannot be lost: the flag is set under the same mutex before the signal is sent.
-  \item \textbf{Reader--writer locks.} Each inode has a \code{pthread_rwlock_t}. Reads take it in shared mode, and writes and truncation take it in exclusive mode. Several readers of one file can therefore proceed in parallel, while a writer has exclusive access.
+  \item \textbf{Reader--writer locks.} Each inode has a \code{pthread_rwlock_t}. Reads take it in shared mode, and writes, truncation and freeing take it in exclusive mode. Several readers of one file can therefore proceed in parallel, while a writer has exclusive access. A further reader--writer lock, \code{ns_lock}, protects the directory tree: lookups take it in shared mode, and operations that change names take it in exclusive mode.
 \end{enumerate}
 
 \figref{fig:reqstate} shows the states a request passes through, including the blocking states created by these patterns.
@@ -1172,27 +1232,59 @@ SchedFS uses three synchronization patterns from the course \cite{arpaci2018,pos
 \label{fig:reqstate}
 \end{figure}
 
-\subsubsection{Deadlock avoidance through lock ordering}
-A thread that holds one lock and requests another can deadlock if another thread acquires the same two locks in the opposite order. SchedFS prevents this with one global order (\figref{fig:locks}), the standard prevention technique of breaking the circular-wait condition \cite{silberschatz2018}. Every code path that holds more than one lock acquires them in that order. A file-system thread may still hold its directory, inode or inode-table lock while it waits for a block request to complete. This cannot deadlock, because the dispatcher that completes the request takes only the queue mutex and the request's own completion mutex, neither of which is held by a waiting thread. The queue mutex is last in the order and is never held during \code{pread} or \code{pwrite}: the dispatcher removes the request and releases the mutex before the transfer.
+\subsubsection{Locks, deadlock avoidance and inode lifetime}
+\label{sec:locking}
+\tabref{tab:locks} lists every lock in SchedFS. A thread that holds one lock and requests another can deadlock if another thread acquires the same two locks in the opposite order. SchedFS prevents this with one global order (\figref{fig:locks}), the standard prevention technique of breaking the circular-wait condition \cite{silberschatz2018}: a lock later in the order is never held while an earlier one is requested. A file-system thread may hold namespace, inode, inode-table or metadata-I/O locks while it waits for a block request to complete. This cannot deadlock, because the dispatcher that completes the request takes only the queue mutex and the request's own completion mutex, neither of which is held by a waiting thread. The queue mutex is never held during \code{pread} or \code{pwrite}: the dispatcher removes the request and releases the mutex before the transfer.
+
+\begin{table}[H]
+\centering
+\caption{Locks in SchedFS}
+\label{tab:locks}
+\small
+\begin{tabularx}{\linewidth}{@{}>{\raggedright\arraybackslash}p{3.2cm} >{\raggedright\arraybackslash}p{1.9cm} X >{\raggedright\arraybackslash}p{3.9cm}@{}}
+\toprule
+\textbf{Lock} & \textbf{Type} & \textbf{Protects} & \textbf{Held during block I/O?} \\
+\midrule
+\code{ns_lock} & rwlock & the directory tree (names, entries, parent links) & name changes: yes; lookups: until the inode is locked \\
+\code{inode_locks[i]} & rwlock per inode & an inode and its data blocks & yes \\
+\code{dir_locks[d]} & mutex per directory & entry slots of one directory & yes (inner lock) \\
+\code{inode_alloc_lock} & mutex & choosing a free inode & yes \\
+\code{inode_table_lock} & mutex & read--modify--write of an inode-table block & yes \\
+\code{bitmap_io_lock},\newline\code{super_io_lock} & mutex & order of bitmap and superblock writes & yes \\
+\code{bitmap_lock},\newline\code{super_lock} & mutex & in-memory bitmap and counters & no (copy only) \\
+queue mutex & mutex & the pending-request array & no \\
+per-request mutex & mutex & one request's completion flag & no; never nested \\
+\bottomrule
+\end{tabularx}
+\end{table}
 
 \begin{figure}[H]
 \centering
 \begin{tikzpicture}[lk/.style={draw, fill=gray!8, rounded corners=1.5pt, font=\scriptsize, minimum width=2.15cm, minimum height=0.8cm, align=center, inner sep=1.5pt}, node distance=0.28cm]
-  \node[lk] (l1) {directory\\mutex};
-  \node[lk, right=of l1] (l2) {inode\\rwlock};
-  \node[lk, right=of l2] (l3) {inode-alloc\\mutex};
+  \node[lk, fill=orange!12] (l0) {\code{ns_lock}\\rwlock};
+  \node[lk, right=of l0] (l2) {inode\\rwlock};
+  \node[lk, right=of l2] (l1) {directory\\mutex};
+  \node[lk, right=of l1] (l3) {inode-alloc\\mutex};
   \node[lk, right=of l3] (l4) {inode-table\\mutex};
-  \node[lk, right=of l4] (l5) {bitmap\\mutex};
-  \node[lk, right=of l5] (l6) {superblock\\mutex};
-  \node[lk, below=0.75cm of l6, fill=blue!8] (l7) {queue\\mutex};
-  \foreach \a/\b in {l1/l2,l2/l3,l3/l4,l4/l5,l5/l6} \draw[arr] (\a) -- (\b);
-  \draw[arr] (l6) -- (l7);
-  \node[lk, below=0.75cm of l1, minimum width=4.4cm, fill=white, dashed] (rq) {per-request completion mutex\\(never nested with the others)};
-  \node[note, left=0.4cm of l7, text width=6.8cm, align=right] {acquired last; never held across \code{pread}/\code{pwrite}};
+  \node[lk, below=0.75cm of l4] (l5a) {bitmap I/O\\mutex};
+  \node[lk, left=of l5a] (l5) {bitmap\\mutex};
+  \node[lk, left=of l5] (l6a) {superblock\\I/O mutex};
+  \node[lk, left=of l6a] (l6) {superblock\\mutex};
+  \node[lk, left=of l6, fill=blue!8] (l7) {queue\\mutex};
+  \node[lk, below=0.75cm of l7, minimum width=2.15cm, dashed, fill=white] (rq) {per-request\\mutex};
+  \foreach \a/\b in {l0/l2,l2/l1,l1/l3,l3/l4,l4/l5a,l5a/l5,l5/l6a,l6a/l6,l6/l7,l7/rq} \draw[arr] (\a) -- (\b);
+  \node[note, right=0.4cm of rq, text width=8.8cm] {the dispatcher takes only the queue mutex and the per-request mutex, one at a time; the queue mutex is never held across \code{pread}/\code{pwrite}};
 \end{tikzpicture}
-\caption{Global lock-acquisition order used to prevent deadlock.}
+\caption{Global lock-acquisition order used to prevent deadlock (follow the arrows).}
 \label{fig:locks}
 \end{figure}
+
+\noindent\textbf{Inode lifetime.} A path is turned into an inode number by \code{resolve()}, and that number is only safe to use while nothing can free it. Previously \code{unlink} freed a file's blocks and inode without the inode lock that reads and writes hold, so an operation that had already resolved the name could read blocks or an inode slot that had meanwhile been reused by another file (review finding~D; \code{test_regress unlink} showed a reader seeing another file's bytes). Now:
+\begin{enumerate}[leftmargin=1.6em]
+  \item A lookup (\code{lookup_locked}) takes \code{ns_lock} for reading, resolves the path, takes the inode's lock, and only then releases \code{ns_lock}.
+  \item \code{unlink} and \code{rmdir} take \code{ns_lock} for writing, remove the directory entry, release \code{ns_lock}, and then take the inode's \emph{write} lock before freeing its blocks and clearing the inode (\code{destroy_inode}).
+\end{enumerate}
+Every operation that found the name before it was removed already holds the inode lock when \code{unlink} gets \code{ns_lock}, so \code{unlink} waits for it in step~2, and no new lookup can find the removed name. The inode number is cleared only after that, so \code{inode_alloc} cannot hand it out while an old user still holds it. Operations do not keep inode numbers between FUSE calls, so there is no longer-lived reference to protect. Because create, mkdir, unlink, rmdir and rename all hold \code{ns_lock} for writing, two threads can no longer both create the same name (before, both succeeded and the directory held two entries with one name). \code{rename} also checks that a directory is not moved into itself or its own subtree and returns \code{EINVAL}. Finally, the bitmap and superblock are snapshotted and written under \code{bitmap_io_lock} and \code{super_io_lock}: without them, two threads could take snapshots $\{A\}$ and $\{A,B\}$ and the scheduler could serve the newer write first, leaving the older snapshot on disk. This was a suspected risk that was not reproduced (5 rounds of 8 threads); it was fixed defensively. \code{statfs} now reads the free counters under \code{super_lock}.
 
 \noindent The inode-table mutex was added after testing exposed a race. Thirty-two inodes share each 4~KiB table block, so updating one inode is a read--modify--write of the whole block. Without the mutex, two threads updating different inodes in the same block could each read the block, change their own inode and write it back, and one update would be lost. \code{test_core} detected this intermittently, and the mutex removed it.
 
@@ -1202,7 +1294,7 @@ SchedFS implements the textbook file-system abstractions on raw blocks \cite{arp
 % ---------------------------------------------------------------------
 \subsection{Data Flow}
 \label{sec:dataflow}
-\figref{fig:dfd} is a level-1 data-flow diagram. Circles are processes, open rectangles are data stores, and the plain rectangle is an external entity. Two separate flows exist. The \emph{live path} carries user data to and from the image. The \emph{evaluation path} carries fixed traces through the scheduler into \code{benchmark.csv} and then into graphs.
+\figref{fig:dfd} is a level-1 data-flow diagram. Circles are processes, open rectangles are data stores, and the plain rectangle is an external entity. Two separate flows exist. The \emph{live path} carries user data to and from the image; in the mounted experiments the user is \code{schedfs-workload}, and the dispatcher's per-request trace (D2) is analysed together with the workload's own latency samples. The \emph{simulation path} carries fixed traces and timed arrivals through the scheduler with a simulated clock into \code{benchmark.csv} and then into graphs.
 
 \begin{figure}[H]
 \centering
@@ -1223,10 +1315,10 @@ SchedFS implements the textbook file-system abstractions on raw blocks \cite{arp
   \node[pr, fill=orange!12] (p4) at (11.3,-3.1) {4.0\\dispatcher};
   \node[ds] (img) at (7.6,-3.1) {D1 \code{disk.img}};
   \node[ex] (fmt) at (3.9,-3.1) {\code{mkfs.schedfs}};
-  \node[pr] (p5) at (14.6,-3.1) {5.0\\metrics,\\logger};
-  \node[ds] (log) at (14.6,-5.6) {D2 \code{filesystem.log}};
+  \node[pr] (p5) at (14.6,-3.1) {5.0\\metrics,\\trace,\\logger};
+  \node[ds] (log) at (14.6,-5.6) {D2 log, \code{--trace} CSV};
   % evaluation path
-  \node[pr] (p6) at (0.2,-5.6) {6.0\\benchmark\\replay};
+  \node[pr] (p6) at (0.2,-5.6) {6.0\\simulation};
   \node[ds] (csv) at (3.9,-5.6) {D3 \code{benchmark.csv}};
   \node[pr] (p7) at (7.6,-5.6) {7.0\\plot\\script};
   \node[ds] (png) at (11.0,-5.6) {D4 \code{results/*.png}};
@@ -1238,12 +1330,12 @@ SchedFS implements the textbook file-system abstractions on raw blocks \cite{arp
   \draw[fl] (p4) -- node[fx, above=2pt] {4 KiB blocks} (img);
   \draw[fl] (p4.130) -- node[fx, sloped, above=1pt] {completion} (p2.-40);
   \draw[fl] (fmt) -- node[fx, above=2pt] {initial layout} (img);
-  \draw[fl] (p4) -- node[fx, above=2pt] {seek, wait} (p5);
-  \draw[fl] (p5) -- node[fx, right=2pt] {log lines} (log);
-  \draw[fl] (p6) -- node[fx, above=2pt] {10 metrics} (csv);
+  \draw[fl] (p4) -- node[fx, above=2pt] {move, wait} (p5);
+  \draw[fl] (p5) -- node[fx, right=2pt] {log lines,\\trace rows} (log);
+  \draw[fl] (p6) -- node[fx, above=2pt] {14 columns} (csv);
   \draw[fl] (csv) -- (p7);
   \draw[fl] (p7) -- (png);
-  \node[fx, below=2pt of p6, text width=2.6cm] {fixed traces; calls \code{scheduler_pick()} directly};
+  \node[fx, below=2pt of p6, text width=2.6cm] {simulated clock; calls \code{scheduler_pick()} directly};
 \end{tikzpicture}}
 \caption{Level-1 data-flow diagram.}
 \label{fig:dfd}
@@ -1271,12 +1363,17 @@ Single dispatcher thread & Makes ``head position'' meaningful and gives the sche
 Bounded queue (128 entries) & Back-pressure: producers block instead of consuming unlimited memory. & A burst larger than 128 requests makes producers wait. \\
 Per-request condition variable & Each caller wakes only for its own request; no thundering herd. & One mutex and one condition variable per request. \\
 Request on the caller's stack & No allocation per I/O; the buffer is written in place. & The caller must not return before completion, which \code{request_wait} guarantees. \\
-Pure \code{scheduler_pick()} & Testable alone; reused by the benchmark and ported to the web demo. & The dispatcher, not the scheduler, must update head and direction. \\
+Pure \code{scheduler_pick()} with time as an argument & Testable alone with a simulated clock; reused by the simulator and ported to the web demo. & The dispatcher, through \code{scheduler_advance()}, must update head and direction. \\
+One movement model & \code{scheduler_advance()} is used by the dispatcher, the simulator and the tests, so they report the same movement for the same order (finding A). & Movement is still a model of a disk head, not a measurement. \\
+Deadlines per operation type & Reads are what a waiting user blocks on; writes can be ordered by locality for a short window. & Foreground writes are treated like background writes, so foreground updates gain little. \\
+Read deadline 0~ms, write deadline 2~ms & Chosen on separate tuning runs (seed 101) before the evaluation. & Tuned on one machine and one workload family. \\
 Deterministic tie-breaking & Reproducible service orders and exact unit-test expectations. & Ties always favour older requests, a small bias. \\
-Hint-based allocation & Keeps a file's blocks close together, so sequential access gives short seeks. & No defragmentation; free space can still fragment. \\
+Namespace lock (\code{ns_lock}) & Makes name changes atomic and gives inodes a safe lifetime (finding D). & Name changes are serialised; a long one delays lookups. \\
+Hint-based allocation & Keeps a file's blocks close together, so sequential access gives short movements. & No defragmentation; free space can still fragment. \\
 Write-through metadata & Bitmap and superblock are on disk before a block is used; simpler than a cache. & More I/O per allocation; no crash consistency without a journal. \\
 Start dispatcher in \code{op_init} & Threads do not survive \code{fork()} during daemonization. & The image is opened twice (validation, then real mount). \\
-Seek $= |\Delta\text{block}|$ & Matches the textbook model; independent of the host device. & Does not model rotation, SSD behaviour or device caches. \\
+Movement $= |\Delta\text{block}|$; optional modeled service time & Matches the textbook model; makes request order matter on a device where it otherwise would not. & Does not model rotation, SSD behaviour or device caches; modeled results are labelled as such. \\
+\code{O_DIRECT} in the experiments & Requests reach the virtual disk instead of the host page cache, so they overlap in the queue. & Slower than cached I/O; the virtual disk is not a physical disk. \\
 \end{longtable}
 }
 % =====================================================================
@@ -1285,7 +1382,7 @@ Seek $= |\Delta\text{block}|$ & Matches the textbook model; independent of the h
 % =====================================================================
 
 \subsection{Implementation Overview}
-SchedFS is written in C11 and builds three executables from one source tree (\tabref{tab:tree}): the file system \code{schedfs}, the formatter \code{mkfs.schedfs} and the benchmark \code{schedfs-bench}. The headers in \code{include/} define every interface, so each \code{.c} file depends only on the layer directly below it. The execution flow follows \figref{fig:workflow}: \code{main()} in \code{fuse_main.c} validates the options and the image, \code{fuse_main()} hands control to libfuse, and from then on the program is driven by kernel callbacks on libfuse worker threads plus one dispatcher thread.
+SchedFS is written in C11 and builds four executables from one source tree (\tabref{tab:tree}): the file system \code{schedfs}, the formatter \code{mkfs.schedfs}, the scheduler simulation \code{schedfs-bench} and the workload generator \code{schedfs-workload}. The headers in \code{include/} define every interface, so each \code{.c} file depends only on the layer directly below it. The execution flow follows \figref{fig:workflow}: \code{main()} in \code{fuse_main.c} validates the options and the image, \code{fuse_main()} hands control to libfuse, and from then on the program is driven by kernel callbacks on libfuse worker threads plus one dispatcher thread.
 
 \begin{table}[H]
 \centering
@@ -1296,18 +1393,20 @@ SchedFS is written in C11 and builds three executables from one source tree (\ta
 \toprule
 \textbf{Directory} & \textbf{Files} & \textbf{Role} \\
 \midrule
-\code{include/} & 8 headers & on-disk format (\code{layout.h}) and the interface of every module \\
-\code{src/fuse/} & \code{fuse_main.c} & option parsing, mount lifecycle, 16 FUSE callbacks \\
-\code{src/fs/} & \code{filesystem.c} & inodes, directories, paths, bitmap allocation, block mapping \\
+\code{include/} & 9 headers & on-disk format (\code{layout.h}) and the interface of every module \\
+\code{src/fuse/} & \code{fuse_main.c} & option parsing, mount lifecycle, 17 FUSE callbacks \\
+\code{src/fs/} & \code{filesystem.c} & inodes, directories, paths, locking, bitmap allocation, block mapping \\
 \code{src/sync/} & \code{request_queue.c} & request life cycle and the bounded queue \\
-\code{src/sched/} & \code{scheduler.c} & FCFS, SSTF, SCAN and Adaptive selection \\
-\code{src/storage/} & \code{virtual_disk.c} & image file, dispatcher thread, \code{pread}/\code{pwrite} \\
-\code{src/bench/} & \code{benchmark_main.c}, \code{metrics.c} & trace replay, metric accumulation \\
+\code{src/sched/} & \code{scheduler.c}, \code{sim.c} & the six policies, the movement model, the deterministic simulator \\
+\code{src/storage/} & \code{virtual_disk.c} & image file, dispatcher thread, \code{O_DIRECT}, modeled service time, trace \\
+\code{src/bench/} & \code{benchmark_main.c}, \code{workload.c}, \code{metrics.c} & simulation driver, mounted workload, metric accumulation \\
 \code{src/utils/} & \code{logger.c} & thread-safe levelled logging \\
 \code{mkfs/} & \code{mkfs.c} & image formatter \\
-\code{tests/} & 2 C tests, 1 shell script & scheduler, core and mounted system tests \\
-\code{scripts/} & 2 Python scripts & graphs, workload generation \\
-\code{docs/} & \code{index.html} and 3 Markdown files & interactive demo, architecture notes \\
+\code{tests/} & 3 C tests, 1 shell script & scheduler, core, regression and mounted system tests \\
+\code{scripts/} & 6 Python, 3 shell scripts & experiments, analysis, charts, demo, old-defect check \\
+\code{docker/} & \code{Dockerfile} & build, test and experiment environment \\
+\code{results/} & raw runs, summaries, charts & mounted experiments and simulation \\
+\code{docs/} & \code{index.html} and Markdown files & interactive demo; scheduling, locking, evaluation, testing, demo notes \\
 \bottomrule
 \end{tabularx}
 \end{table}
@@ -1326,11 +1425,13 @@ SchedFS is written in C11 and builds three executables from one source tree (\ta
 \code{sfs_superblock_t} & \code{layout.h} & magic, geometry, free counts, region offsets; 128 bytes at block 0 \\
 \code{sfs_inode_t} & \code{layout.h} & mode, links, owner, size, times, \code{direct[12]}, \code{indirect}; 128 bytes \\
 \code{sfs_dirent_t} & \code{layout.h} & inode number and a 60-byte name; 64 entries per block \\
-\code{disk_request_t} & \code{request.h} & ID, operation, block, buffer, arrival/service/completion times, mutex, condition variable, \code{completed}, result \\
+\code{disk_request_t} & \code{request.h} & ID, operation, block, buffer, caller, arrival/service-start/completion times, queue depth, mutex, condition variable, \code{completed}, result \\
 \code{request_queue_t} & \code{request_queue.h} & array of request pointers, count, capacity, \code{stopping}, mutex, \code{not_empty}, \code{not_full} \\
-\code{scheduler_t} & \code{scheduler.h} & policy, total blocks, head, SCAN direction, $\alpha$, $\beta$ \\
-\code{virtual_disk_t} & \code{virtual_disk.h} & file descriptor, queue, scheduler, metrics, dispatcher thread \\
-\code{sfs_t} & \code{filesystem.h} & disk, in-memory superblock and bitmap, global mutexes, 257 inode rwlocks, 257 directory mutexes \\
+\code{scheduler_t} & \code{scheduler.h} & policy, total blocks, head, SCAN/LOOK direction, $\alpha$, $\beta$, read and write deadlines \\
+\code{vdisk_options_t} & \code{virtual_disk.h} & policy and its parameters, \code{direct_io}, modeled service time, queue capacity, trace path \\
+\code{virtual_disk_t} & \code{virtual_disk.h} & file descriptor, queue, scheduler, metrics, options, bounce buffer, trace, dispatcher thread \\
+\code{sim_arrival_t}, \code{sim_model_t} & \code{sim.h} & simulated arrival time, block and operation; base and per-block service time, queue capacity \\
+\code{sfs_t} & \code{filesystem.h} & disk, in-memory superblock and bitmap, \code{ns_lock}, metadata mutexes, 257 inode rwlocks, 257 directory mutexes \\
 \bottomrule
 \end{tabularx}
 \end{table}
@@ -1340,63 +1441,77 @@ SchedFS is written in C11 and builds three executables from one source tree (\ta
 
 \paragraph{M1 Image formatter.} \code{main()} in \code{mkfs/mkfs.c} validates the size with \code{parse_size()}, computes the layout (Listing~\ref{lst:mkfs}), and writes each region with \code{write_full()}, which repeats \code{pwrite} until every byte is written and retries on \code{EINTR}. Errors are reported with \code{perror}; any failure after the file is created jumps to a \code{fail:} label that closes and unlinks the image, so a half-formatted image is never left behind.
 
-\paragraph{M2 FUSE adapter.} The callbacks are thin. Each one converts its arguments and returns the \code{sfs_*} result, which is already a negative \code{errno} as libfuse expects. The \code{init} and \code{destroy} callbacks (Listing~\ref{lst:fuseinit}) own the file-system instance. If the image cannot be mounted inside the daemon, \code{op_init} logs the error and calls \code{fuse_exit()}, so the process stops cleanly instead of serving a broken mount.
+\paragraph{M2 FUSE adapter.} The callbacks are thin. Each one records the calling process for the trace, converts its arguments and returns the \code{sfs_*} result, which is already a negative \code{errno} as libfuse expects. The \code{init} and \code{destroy} callbacks (Listing~\ref{lst:fuseinit}) own the file-system instance. If the image cannot be mounted inside the daemon, \code{op_init} logs the error and calls \code{fuse_exit()}, so the process stops cleanly instead of serving a broken mount. Every option is parsed into one \code{vdisk_options_t}, and negative or malformed values are rejected with the usage text.
 
-\paragraph{M3 Inode and directory layer.} Public operations follow one pattern: resolve the path, lock the inode in the right mode, read the inode, perform block operations, write the inode back and unlock. \code{inode_write} (Listing~\ref{lst:inodewrite}) is the read--modify--write that needed the inode-table mutex. \code{sfs_rename} (Listing~\ref{lst:rename}) shows the error-handling style for multi-step metadata changes: every step that succeeded is undone if a later step fails.
+\paragraph{M3 Inode and directory layer.} Public operations follow one pattern: look up the path and lock the inode in the right mode (\code{lookup_locked}, Listing~\ref{lst:lookup}), read the inode, perform block operations, write the inode back and unlock. \code{inode_write} (Listing~\ref{lst:inodewrite}) is the read--modify--write that needs the inode-table mutex. \code{sfs_truncate} (Listing~\ref{lst:truncate}) zeroes the discarded tail of a partial block when it shrinks a file (finding B), so the bytes of the last block beyond the file size are always zero. \code{sfs_unlink} removes the name under \code{ns_lock} and frees the inode under its write lock (Listing~\ref{lst:unlink}). \code{sfs_rename} (Listing~\ref{lst:rename}) refuses to move a directory into its own subtree and undoes every completed step if a later step fails.
 
-\paragraph{M4 Block allocation and mapping.} \code{bmap} (Listing~\ref{lst:bmap}) returns block 0 for an unallocated logical block when \code{create} is false, which is how holes read as zeros, and allocates on demand when \code{create} is true. \code{free_inode_blocks} releases direct blocks, then indirect entries, and finally the indirect block itself once it is empty.
+\paragraph{M4 Block allocation and mapping.} \code{bmap} (Listing~\ref{lst:bmap}) returns block 0 for an unallocated logical block when \code{create} is false, which is how holes read as zeros, and allocates on demand when \code{create} is true. \code{free_inode_blocks} releases direct blocks, then indirect entries, and finally the indirect block itself once it is empty. \code{sync_sb} and \code{sync_bitmap} (Listing~\ref{lst:sync}) take the snapshot and write it under one I/O lock.
 
-\paragraph{M5 Request queue.} Listing~\ref{lst:queue} shows the two queue operations and the completion wait. Every \code{pthread_cond_wait} sits in a \code{while} loop that re-tests its predicate. Removal uses \code{memmove}, so the array keeps arrival order, which FCFS relies on.
+\paragraph{M5 Request queue.} Listing~\ref{lst:queue} shows the completion wait and the two queue operations. Every \code{pthread_cond_wait} sits in a \code{while} loop that re-tests its predicate. \code{rq_take} reads the clock, calls the scheduler and records the queue depth while it holds the mutex. Removal uses \code{memmove}, so the array keeps arrival order.
 
-\paragraph{M6 Scheduler.} Listing~\ref{lst:sched} is the complete selection function. \code{older()} gives the deterministic tie-break. SCAN falls back to the nearest request when nothing lies in the current direction; the dispatcher notices that the head has turned back and flips the direction.
+\paragraph{M6 Scheduler and simulator.} Listing~\ref{lst:sched} is the complete selection function, and Listing~\ref{lst:advance} the movement model. \code{older()} gives the deterministic tie-break. SCAN and LOOK fall back to the nearest request when nothing lies in the current direction; \code{scheduler_advance()} then reverses the direction and, for SCAN only, charges the trip to the edge. The simulation loop (Listing~\ref{lst:sim}) admits arrivals by simulated time and advances the clock by the modeled service time.
 
-\paragraph{M7 Virtual disk and dispatcher.} \code{transfer()} (Listing~\ref{lst:vdisk}) rejects out-of-range blocks with \code{EINVAL} before queuing anything. The dispatcher treats a short transfer as \code{EIO} and passes the error code back through the request, so a failure reaches the application as a normal \code{errno}.
+\paragraph{M7 Virtual disk and dispatcher.} The dispatcher loop (Listing~\ref{lst:vdisk}) is the only place where image I/O happens. With \code{--direct-io}, \code{serve()} copies through a 4~KiB-aligned bounce buffer, which \code{O_DIRECT} requires. \code{model_delay()} (Listing~\ref{lst:model}) sleeps until an absolute time, so the modeled service time counts from the start of service and includes the real I/O time. \code{transfer()} rejects out-of-range blocks with \code{EINVAL} before queuing anything, and a short transfer is reported as \code{EIO}, so a failure reaches the application as a normal \code{errno}.
 
-\paragraph{M8 Metrics and logging.} \code{metrics_record} (Listing~\ref{lst:metrics}) accumulates the sum and sum of squares of the waiting times, so the mean and standard deviation can be computed without storing every sample. The logger serialises writes with a mutex and filters DEBUG entries unless \code{--verbose} is set.
+\paragraph{M8 Metrics and logging.} \code{metrics_record} (Listing~\ref{lst:metrics}) accumulates the sum and sum of squares of the waiting times and the queue depth, so means and the standard deviation can be computed without storing every sample; the per-request detail goes to the trace. The logger serialises writes with a mutex and filters DEBUG entries unless \code{--verbose} is set.
 
-\paragraph{M9 Benchmark.} The replay loop (Listing~\ref{lst:bench}) charges SCAN for travelling to the disk edge before it reverses (block 0 when moving down, block 4095 when moving up), which is what distinguishes SCAN's totals from LOOK's.
+\paragraph{M9 Simulation, workload and experiments.} \code{benchmark_main.c} defines the five static traces and the two dynamic scenarios and calls \code{sim_run} for every policy. \code{workload.c} forks the foreground and background processes, times every foreground operation with \code{CLOCK_MONOTONIC}, and writes the samples (\code{fg.csv}), the background progress (\code{bg_*.csv}) and \code{workload.json}; \code{run_mounted.sh} adds the trace and \code{run.json}. \code{experiments.py} runs the tuning and evaluation matrices through \code{run_mounted.sh}, and \code{report_results.py} produces \code{summary.md}, \code{summary.csv} and the charts.
 
-\paragraph{M10 Tests.} \code{test_scheduler} (Listing~\ref{lst:testsched}) asserts both the exact service order and the total head movement. \code{system.sh} adds a regression test for background mounting (Listing~\ref{lst:systemsh}); every step runs under \code{timeout}, so a hang fails the test instead of blocking it.
+\paragraph{M10 Tests.} \code{test_scheduler} (Listings~\ref{lst:testsched} and~\ref{lst:teststarve}) asserts exact service orders, movements and simulated waits. \code{test_regress} reproduces findings A, B and D and runs an fsck-style image checker after each phase. \code{system.sh} (Listing~\ref{lst:systemsh}) mounts a real image under each policy and repeats the truncate and rename checks through the kernel; every step of the background-mount test runs under \code{timeout}, so a hang fails the test instead of blocking it.
 
 \subsection{Source Code}
 \label{sec:source}
 The listings below are copied verbatim from the repository, by line range, with the original line numbers. Complete files for the scheduling path are in Appendix~\ref{app:source}.
 
-\lstinputlisting[firstline=21,lastline=45,caption={On-disk structures with compile-time size checks (\code{include/layout.h})},label={lst:layout}]{../include/layout.h}
+\lstinputlisting[firstline=21,firstnumber=21,lastline=45,caption={On-disk structures with compile-time size checks (\code{include/layout.h})},label={lst:layout}]{../include/layout.h}
 \noindent The three \code{_Static_assert} lines tie the C structures to the on-disk format: 32 inodes and 64 directory entries fit exactly in one 4~KiB block.
 
-\lstinputlisting[firstline=62,lastline=80,caption={Layout computation and safe creation of the image (\code{mkfs/mkfs.c})},label={lst:mkfs}]{../mkfs/mkfs.c}
+\lstinputlisting[firstline=62,firstnumber=62,lastline=80,caption={Layout computation and safe creation of the image (\code{mkfs/mkfs.c})},label={lst:mkfs}]{../mkfs/mkfs.c}
 \noindent For 4{,}096 blocks this gives one bitmap block, eight inode blocks and \code{data_start} $= 10$, which matches the output in \figref{fig:term-mkfs}.
 
-\lstinputlisting[firstline=26,lastline=49,caption={Starting the file system inside the FUSE daemon (\code{src/fuse/fuse_main.c})},label={lst:fuseinit}]{../src/fuse/fuse_main.c}
+\lstinputlisting[firstline=32,firstnumber=32,lastline=53,caption={Starting the file system inside the FUSE daemon (\code{src/fuse/fuse_main.c})},label={lst:fuseinit}]{../src/fuse/fuse_main.c}
 
-\lstinputlisting[firstline=71,lastline=82,caption={Inode update protected by the inode-table mutex (\code{src/fs/filesystem.c})},label={lst:inodewrite}]{../src/fs/filesystem.c}
+\lstinputlisting[firstline=505,firstnumber=505,lastline=529,caption={Lookup that holds the namespace lock until the inode is locked (\code{src/fs/filesystem.c})},label={lst:lookup}]{../src/fs/filesystem.c}
 
-\lstinputlisting[firstline=185,lastline=226,caption={[Logical-to-physical block mapping (\code{filesystem.c})]Logical-to-physical block mapping with on-demand allocation (\code{src/fs/filesystem.c})},label={lst:bmap}]{../src/fs/filesystem.c}
-\noindent Lines 191--192 pass the previous direct block as the allocation hint, which keeps a file's blocks adjacent (\figref{fig:fc-alloc}).
+\lstinputlisting[firstline=82,firstnumber=82,lastline=93,caption={Inode update protected by the inode-table mutex (\code{src/fs/filesystem.c})},label={lst:inodewrite}]{../src/fs/filesystem.c}
 
-\lstinputlisting[firstline=733,lastline=767,caption={Rename with roll-back of completed steps on failure (\code{src/fs/filesystem.c})},label={lst:rename}]{../src/fs/filesystem.c}
+\lstinputlisting[firstline=39,firstnumber=39,lastline=69,caption={[Metadata write-back in snapshot order (\code{filesystem.c})]Metadata write-back: snapshot and write under one I/O lock (\code{src/fs/filesystem.c})},label={lst:sync}]{../src/fs/filesystem.c}
 
-\lstinputlisting[firstline=39,lastline=93,caption={[Completion wait and bounded queue (\code{request_queue.c})]Completion wait and the bounded producer--consumer queue (\code{src/sync/request_queue.c})},label={lst:queue}]{../src/sync/request_queue.c}
-\noindent The scheduler runs at line 86 while the queue mutex is held, which is safe because \code{scheduler_pick} never blocks. The I/O itself happens after \code{rq_take} has released the mutex.
+\lstinputlisting[firstline=196,firstnumber=196,lastline=237,caption={[Logical-to-physical block mapping (\code{filesystem.c})]Logical-to-physical block mapping with on-demand allocation (\code{src/fs/filesystem.c})},label={lst:bmap}]{../src/fs/filesystem.c}
+\noindent Line 202 passes the previous direct block as the allocation hint, which keeps a file's blocks adjacent (\figref{fig:fc-alloc}).
 
-\lstinputlisting[firstline=37,lastline=106,caption={Request selection for all four policies (\code{src/sched/scheduler.c})},label={lst:sched}]{../src/sched/scheduler.c}
-\noindent Lines 88--105 implement Equation~\eqref{eq:adaptive}. The $10^{-12}$ tolerance makes equal scores compare as equal despite floating-point rounding, so the tie-break still applies.
+\lstinputlisting[firstline=687,firstnumber=687,lastline=728,caption={[Truncate that zeroes the discarded tail (\code{filesystem.c})]Truncate that zeroes the discarded tail of a partial block, finding B (\code{src/fs/filesystem.c})},label={lst:truncate}]{../src/fs/filesystem.c}
 
-\lstinputlisting[firstline=32,lastline=96,caption={[Dispatcher thread and synchronous transfer (\code{virtual_disk.c})]Dispatcher thread and the synchronous transfer used by the file system (\code{src/storage/virtual_disk.c})},label={lst:vdisk}]{../src/storage/virtual_disk.c}
+\lstinputlisting[firstline=730,firstnumber=730,lastline=760,caption={[Unlink and inode lifetime (\code{filesystem.c})]Unlink: remove the name under \code{ns_lock}, free the inode under its write lock, finding D (\code{src/fs/filesystem.c})},label={lst:unlink}]{../src/fs/filesystem.c}
 
-\lstinputlisting[firstline=16,lastline=26,caption={Thread-safe metric accumulation (\code{src/bench/metrics.c})},label={lst:metrics}]{../src/bench/metrics.c}
+\lstinputlisting[firstline=807,firstnumber=807,lastline=860,caption={[Rename with subtree check and roll-back (\code{filesystem.c})]Rename with the subtree check and roll-back of completed steps (\code{src/fs/filesystem.c})},label={lst:rename}]{../src/fs/filesystem.c}
 
-\lstinputlisting[firstline=74,lastline=96,caption={Replay loop and SCAN edge accounting (\code{src/bench/benchmark_main.c})},label={lst:bench}]{../src/bench/benchmark_main.c}
+\lstinputlisting[firstline=41,firstnumber=41,lastline=96,caption={[Completion wait and bounded queue (\code{request_queue.c})]Completion wait and the bounded producer--consumer queue (\code{src/sync/request_queue.c})},label={lst:queue}]{../src/sync/request_queue.c}
+\noindent The scheduler runs at line 88 while the queue mutex is held, which is safe because \code{scheduler_pick} never blocks. The I/O itself happens after \code{rq_take} has released the mutex.
 
-\lstinputlisting[firstline=11,lastline=48,caption={Textbook-trace unit test (\code{tests/test_scheduler.c})},label={lst:testsched}]{../tests/test_scheduler.c}
+\lstinputlisting[firstline=79,firstnumber=79,lastline=157,caption={[Request selection for all six policies (\code{scheduler.c})]Deadlines and request selection for all six policies (\code{src/sched/scheduler.c})},label={lst:sched}]{../src/sched/scheduler.c}
+\noindent Lines 79--82 compute a request's deadline (Equation~\eqref{eq:deadline}) and lines 115--133 implement the deadline rule. Lines 134--155 implement Equation~\eqref{eq:adaptive}; the $10^{-12}$ tolerance makes equal scores compare as equal despite floating-point rounding, so the tie-break still applies.
 
-\lstinputlisting[style=shstyle,firstline=20,lastline=34,caption={Background-mount regression test (\code{tests/system.sh})},label={lst:systemsh}]{../tests/system.sh}
+\lstinputlisting[firstline=159,firstnumber=159,lastline=175,caption={The movement model shared by the dispatcher, the simulator and the tests (\code{src/sched/scheduler.c})},label={lst:advance}]{../src/sched/scheduler.c}
+
+\lstinputlisting[firstline=93,firstnumber=93,lastline=119,caption={Dispatcher thread (\code{src/storage/virtual_disk.c})},label={lst:vdisk}]{../src/storage/virtual_disk.c}
+
+\lstinputlisting[firstline=53,firstnumber=53,lastline=68,caption={Modeled service time, used only in the model configuration (\code{virtual_disk.c})},label={lst:model}]{../src/storage/virtual_disk.c}
+
+\lstinputlisting[firstline=15,firstnumber=15,lastline=27,caption={Thread-safe metric accumulation (\code{src/bench/metrics.c})},label={lst:metrics}]{../src/bench/metrics.c}
+
+\lstinputlisting[firstline=35,firstnumber=35,lastline=67,caption={Simulation loop with a simulated clock (\code{src/sched/sim.c})},label={lst:sim}]{../src/sched/sim.c}
+
+\lstinputlisting[firstline=60,firstnumber=60,lastline=77,caption={Textbook-trace test for all six policies (\code{tests/test_scheduler.c})},label={lst:testsched}]{../tests/test_scheduler.c}
+
+\lstinputlisting[firstline=118,firstnumber=118,lastline=158,caption={[Starvation and Adaptive-bound tests (\code{test_scheduler.c})]Continuous nearby arrivals and the Adaptive bound (\code{tests/test_scheduler.c})},label={lst:teststarve}]{../tests/test_scheduler.c}
+
+\lstinputlisting[style=shstyle,firstline=9,firstnumber=9,lastline=25,caption={Mounted test under all six policies, with the truncate and rename checks (\code{tests/system.sh})},label={lst:systemsh}]{../tests/system.sh}
 
 % ---------------------------------------------------------------------
 \subsection{Code Contribution Summary}
 \label{sec:loc}
-\textbf{Counting method.} Lines were counted with \code{report/tools/count_loc.py}, which is included in the repository with this report. It reads every C source and header, shell script, Python script and the Makefile in the repository, and it skips blank lines and comment-only lines. C block comments are removed before counting. Generated files, third-party code, \code{docs/}, \code{results/}, this \code{report/} folder and the 655-line HTML demo page are excluded. The result is \textbf{2{,}103 qualifying lines} (2{,}369 physical lines). \tabref{tab:locfile} gives the per-file counts.
+\textbf{Counting method.} Lines were counted with \code{report/tools/count_loc.py}, which is included in the repository with this report. It reads every C source and header, shell script, Python script and the Makefile in the repository, and it skips blank lines and comment-only lines. C block comments are removed before counting. Generated files, third-party code, \code{docs/}, \code{results/}, this \code{report/} folder, \code{docker/Dockerfile} and the 780-line HTML demo page are excluded. The result is \textbf{4{,}205 qualifying lines} (4{,}888 physical lines). \tabref{tab:locfile} gives the per-file counts. Each file is counted to the module it implements, with headers counted with their source file; the experiment, analysis, chart and demo scripts in \code{scripts/} count to M9, and \code{scripts/check_old_defects.sh}, which runs the regression tests, counts to M10.
 
 {\small
 \begin{longtable}{@{}l r r l@{}}
@@ -1411,35 +1526,45 @@ The listings below are copied verbatim from the repository, by line range, with 
 \endhead
 \bottomrule
 \endfoot
-\code{src/fs/filesystem.c} & 773 & 814 & M3, M4 \\
-\code{src/fuse/fuse_main.c} & 199 & 234 & M2 \\
+\code{src/fs/filesystem.c} & 846 & 909 & M3, M4 \\
+\code{tests/test_regress.c} & 390 & 448 & M10 \\
+\code{src/bench/workload.c} & 283 & 313 & M9 \\
+\code{src/fuse/fuse_main.c} & 268 & 306 & M2 \\
+\code{scripts/report_results.py} & 260 & 290 & M9 \\
+\code{tests/test_scheduler.c} & 254 & 315 & M10 \\
+\code{src/storage/virtual_disk.c} & 248 & 272 & M7 \\
+\code{scripts/analyze_run.py} & 161 & 184 & M9 \\
+\code{src/sched/scheduler.c} & 149 & 175 & M6 \\
 \code{mkfs/mkfs.c} & 145 & 154 & M1 \\
-\code{src/bench/benchmark_main.c} & 130 & 142 & M9 \\
-\code{src/storage/virtual_disk.c} & 103 & 116 & M7 \\
-\code{src/sched/scheduler.c} & 95 & 106 & M6 \\
-\code{src/sync/request_queue.c} & 94 & 108 & M5 \\
-\code{tests/test_core.c} & 91 & 100 & M10 \\
-\code{scripts/plot_results.py} & 88 & 108 & M9 \\
-\code{tests/test_scheduler.c} & 42 & 49 & M10 \\
+\code{scripts/experiments.py} & 142 & 168 & M9 \\
+\code{src/bench/benchmark_main.c} & 130 & 162 & M9 \\
+\code{src/sync/request_queue.c} & 97 & 111 & M5 \\
+\code{tests/test_core.c} & 95 & 104 & M10 \\
+\code{scripts/plot_results.py} & 78 & 92 & M9 \\
+\code{scripts/demo.sh} & 74 & 85 & M9 \\
+\code{src/sched/sim.c} & 67 & 75 & M6 \\
+\code{include/virtual_disk.h} & 55 & 69 & M7 \\
+\code{Makefile} & 53 & 63 & M10 \\
+\code{tests/system.sh} & 44 & 49 & M10 \\
 \code{src/utils/logger.c} & 40 & 49 & M8 \\
-\code{Makefile} & 35 & 36 & M10 \\
-\code{include/filesystem.h} & 35 & 43 & M3, M4 \\
+\code{include/request.h} & 38 & 52 & M5 \\
+\code{include/filesystem.h} & 36 & 60 & M3, M4 \\
+\code{scripts/run_mounted.sh} & 36 & 53 & M9 \\
 \code{include/layout.h} & 35 & 47 & M1 \\
-\code{include/request.h} & 35 & 44 & M5 \\
-\code{tests/system.sh} & 32 & 34 & M10 \\
+\code{include/scheduler.h} & 32 & 68 & M6 \\
+\code{scripts/check_old_defects.sh} & 28 & 34 & M10 \\
 \code{scripts/generate_workload.py} & 28 & 38 & M9 \\
-\code{src/bench/metrics.c} & 21 & 29 & M8 \\
-\code{include/virtual_disk.h} & 21 & 28 & M7 \\
+\code{include/sim.h} & 25 & 45 & M6 \\
+\code{src/bench/metrics.c} & 25 & 33 & M8 \\
 \code{include/request_queue.h} & 20 & 27 & M5 \\
-\code{include/scheduler.h} & 18 & 26 & M6 \\
-\code{include/metrics.h} & 15 & 22 & M8 \\
+\code{include/metrics.h} & 15 & 23 & M8 \\
 \code{include/logger.h} & 8 & 15 & M8 \\
 \midrule
-\textbf{Total} & \textbf{2{,}103} & \textbf{2{,}369} & \\
+\textbf{Total} & \textbf{4{,}205} & \textbf{4{,}888} & \\
 \end{longtable}
 }
 
-\noindent\tabref{tab:contrib} shows the modules and files each team member implemented, with the qualifying lines of code in them.
+\noindent\tabref{tab:contrib} shows the modules and files each team member implemented, with the qualifying lines of code in them, summed from \tabref{tab:locfile}.
 
 \begin{table}[H]
 \centering
@@ -1450,12 +1575,12 @@ The listings below are copied verbatim from the repository, by line range, with 
 \toprule
 \textbf{Member} & \textbf{Modules and files} & \textbf{LOC} \\
 \midrule
-Saanvi Grover & M1, M2, M8 logger: \code{fuse_main.c}, \code{mkfs.c}, \code{layout.h}, \code{filesystem.h}, \code{logger.c/.h}, \code{system.sh} & 494 \\
-Prankit Goel & M5, M6, M7: \code{request_queue.c}, \code{scheduler.c}, \code{virtual_disk.c}, their headers, \code{test_scheduler.c} & 428 \\
-Aditya Sharma & M3, M4: \code{filesystem.c} & 773 \\
-Aaradhya Shankar Kulashri & M8 metrics, M9, M10: \code{benchmark_main.c}, \code{metrics.c/.h}, both Python scripts, \code{test_core.c}, \code{Makefile} & 408 \\
+Saanvi Grover & M1, M2, M8 logger: \code{mkfs.c}, \code{layout.h}, \code{fuse_main.c}, \code{logger.c/.h} & 496 \\
+Prankit Goel & M5, M6, M7: \code{request_queue.c}, \code{scheduler.c}, \code{sim.c}, \code{virtual_disk.c} and their headers & 731 \\
+Aditya Sharma & M3, M4: \code{filesystem.c}, \code{filesystem.h} & 882 \\
+Aaradhya Shankar Kulashri & M8 metrics, M9, M10: \code{metrics.c/.h}, \code{benchmark_main.c}, \code{workload.c}, the scripts in \code{scripts/}, the four tests, \code{Makefile} & 2{,}096 \\
 \midrule
-\textbf{Total} & all modules & \textbf{2{,}103} \\
+\textbf{Total} & all modules & \textbf{4{,}205} \\
 \bottomrule
 \end{tabularx}
 \end{table}
@@ -1463,12 +1588,12 @@ Aaradhya Shankar Kulashri & M8 metrics, M9, M10: \code{benchmark_main.c}, \code{
 % ---------------------------------------------------------------------
 \subsection{Implementation Screenshots}
 \label{sec:implshots}
-All terminal figures in this report come from one run of the repository at commit \code{a7e489c} in an \code{ubuntu:24.04} container with \code{/dev/fuse}, executed as the unprivileged user \code{student}. Each figure is drawn from the captured terminal text without editing; the raw logs are kept in \code{figures/screenshots/raw_logs/}. The browser figures are screenshots of the live demo page.
+All terminal figures in this report come from one run of the repository at the earlier commit \code{a7e489c}, in an \code{ubuntu:24.04} container with \code{/dev/fuse}, executed as the unprivileged user \code{student}. Each figure is drawn from the captured terminal text without editing; the raw logs are kept in \code{figures/screenshots/raw_logs/}. The browser figures are screenshots of the demo page at the same commit. That commit precedes the LOOK and Deadline policies, the review fixes and the new experiments. The file-system behaviour shown in \figref{fig:term-mkfs}, \figref{fig:term-mount} and \figref{fig:term-ops} is unchanged; every figure whose content no longer matches the current code says so in its caption, and the current results are in Section~\ref{sec:results}.
 
 \begin{figure}[H]
 \centering
 \includegraphics[width=\linewidth]{figures/screenshots/term_01_build.png}
-\caption{Building the three executables with strict warning flags; the compiler emits no warnings.}
+\caption{Building the three executables of commit \code{a7e489c} with strict warning flags; the compiler emits no warnings. The current Makefile also builds \code{schedfs-workload}.}
 \label{fig:term-build}
 \end{figure}
 
@@ -1500,7 +1625,7 @@ All terminal figures in this report come from one run of the repository at commi
 \begin{figure}[H]
 \centering
 \includegraphics[width=\linewidth]{figures/screenshots/term_05_unmount.png}
-\caption{Unmount summary in \code{filesystem.log}, and data persisting after a remount under FCFS.}
+\caption{Unmount summary in \code{filesystem.log}, and data persisting after a remount under FCFS (captured at commit \code{a7e489c}; the current summary line also reports mean and maximum wait and maximum queue depth).}
 \label{fig:term-unmount}
 \end{figure}
 
@@ -1509,7 +1634,7 @@ All terminal figures in this report come from one run of the repository at commi
 \begin{figure}[H]
 \centering
 \includegraphics[width=\linewidth]{figures/screenshots/term_08_verbose.png}
-\caption{Verbose mode under SCAN: DEBUG entries show five consecutive data blocks allocated for a 20{,}000-byte file.}
+\caption{Verbose mode under SCAN: DEBUG entries show five consecutive data blocks allocated for a 20{,}000-byte file (commit \code{a7e489c}).}
 \label{fig:term-verbose}
 \end{figure}
 
@@ -1532,16 +1657,16 @@ All terminal figures in this report come from one run of the repository at commi
 \begin{figure}[H]
 \centering
 \includegraphics[width=0.86\linewidth]{figures/screenshots/web_lab_textbook.png}
-\caption{Scheduler lab after playing the textbook trace: FCFS 640, SSTF 236, SCAN 236 and Adaptive 299 blocks.}
+\caption{Scheduler lab at commit \code{a7e489c} after playing the textbook trace: FCFS 640, SSTF 236, SCAN 236 and Adaptive 299 blocks. The page has since been updated by the project and was not re-captured for this report.}
 \label{fig:web-lab}
 \end{figure}
 
-\noindent The lab in \figref{fig:web-lab} runs a JavaScript port of \code{scheduler_pick()}. Its FCFS, SSTF and SCAN totals and service orders match the C unit test exactly. Its Adaptive total (299) uses a modelled clock in the browser, so it is shown for illustration only and is not one of the tested values.
+\noindent The lab in \figref{fig:web-lab} runs a JavaScript port of \code{scheduler_pick()}. Its FCFS, SSTF and SCAN totals and service orders match the C unit test exactly. Its Adaptive total (299) uses a modelled clock in the browser, so it is shown for illustration only and is not one of the tested values. LOOK and Deadline were added after this capture.
 
 \begin{figure}[H]
 \centering
 \includegraphics[width=0.86\linewidth]{figures/screenshots/web_lab_concurrent.png}
-\caption{Scheduler lab on the 16-request concurrent trace: FCFS zig-zags across the disk (27{,}402 blocks).}
+\caption{Scheduler lab at commit \code{a7e489c} on the 16-request trace then called ``concurrent'' (now ``interleaved''): FCFS zig-zags across the disk (27{,}402 blocks).}
 \label{fig:web-lab-conc}
 \end{figure}
 
@@ -1559,38 +1684,39 @@ All terminal figures in this report come from one run of the repository at commi
 % =====================================================================
 
 \subsection{Testing Methodology}
-Testing was carried out at the levels shown in \tabref{tab:levels}. Each level adds a layer of the real system: the scheduler alone, then the core file-system API with threads but without FUSE, then the mounted file system driven by shell commands, and finally measurement.
+Testing was carried out at the levels shown in \tabref{tab:levels}. Each level adds a layer of the real system: the scheduler alone with a simulated clock, then the core file-system API with threads but without FUSE, then the mounted file system driven by shell commands, and finally measurement. Four kinds of evidence are kept apart throughout: the deterministic \emph{simulation}, the \emph{tests} (correctness, not performance), the \emph{mounted experiments} (measured latency and throughput), and physical storage, which was not measured.
 
 \begin{table}[H]
 \centering
 \caption{Testing levels and tools}
 \label{tab:levels}
 \small
-\begin{tabularx}{\linewidth}{@{}l X l@{}}
+\begin{tabularx}{\linewidth}{@{}>{\raggedright\arraybackslash}p{2.9cm} >{\raggedright\arraybackslash}X >{\raggedright\arraybackslash}p{4.6cm}@{}}
 \toprule
 \textbf{Level} & \textbf{What is checked} & \textbf{Tool} \\
 \midrule
-Unit & exact service order and head movement of FCFS, SSTF, SCAN & \code{tests/test_scheduler.c} \\
-Integration & create, write, read, truncate, sparse reads, persistence across remount, 4 concurrent writers & \code{tests/test_core.c} \\
-System & a real FUSE mount under each policy, and in background mode, driven by \code{mkdir}, \code{cp}, \code{cmp}, \code{truncate}, \code{mv}, \code{rm}, \code{rmdir} & \code{tests/system.sh} \\
-Functional & each functional requirement on a manually mounted image & shell session (\figref{fig:term-mount}--\figref{fig:term-verbose}) \\
-Boundary & name length limit, file larger than the direct blocks, invalid image sizes & shell session \\
-Error handling & invalid options, missing or foreign image, non-empty directory, existing target & shell session (\figref{fig:term-errors}) \\
-Concurrency & data races under 4 threads & ThreadSanitizer \cite{serebryany2009} \\
-Performance & seek distance, waiting time and throughput per policy & \code{schedfs-bench}; mounted workload \\
+Unit & service order, movement and simulated waits of all six policies; deadlines; Adaptive bound; queue saturation and shutdown (119 checks, simulated clock) & \code{tests/test_scheduler.c} \\
+Regression & review findings A, B and D on the core API, with an fsck-style image checker after each phase & \code{tests/test_regress.c} \\
+Old-defect check & the regression tests against the original \code{filesystem.c} & \code{scripts/}\allowbreak\code{check_old_defects.sh} \\
+Integration & create, write, read, sparse truncate, persistence across remount, 4 concurrent writers & \code{tests/test_core.c} \\
+System & a real FUSE mount under all six policies and in background mode; truncate, rename refusal and persistence through the kernel & \code{tests/system.sh} \\
+Functional, boundary, error handling & each functional requirement, limits and error paths on a manually mounted image & shell session (\figref{fig:term-mount}--\figref{fig:term-errors}) \\
+Concurrency & data races in the core and regression tests & ThreadSanitizer, \code{make tsan} \cite{serebryany2009} \\
+Simulation & modeled movement and simulated waits on fixed traces and dynamic scenarios & \code{schedfs-bench} \\
+Performance & measured foreground latency, background throughput and queue behaviour on the mounted file system & \code{scripts/experiments.py} \\
 \bottomrule
 \end{tabularx}
 \end{table}
 
-\noindent\textbf{Environment.} Docker Desktop on Windows 11 running the \code{ubuntu:24.04} image, with GCC 13.3.0 and libfuse 3.14.0 (\figref{fig:term-build}). The container had \code{/dev/fuse} and the \code{SYS_ADMIN} capability, and all tests ran as an unprivileged user, because \code{system.sh} refuses to run as root.
+\noindent\textbf{Environment.} Docker Desktop 29.x on Windows~11 with the WSL~2 kernel 6.18.58-microsoft-standard-WSL2 and 20 logical CPUs, running the \code{ubuntu:24.04} image of \code{docker/Dockerfile} with GCC 13.3 and libfuse 3.14.0. The container had \code{/dev/fuse} and the \code{SYS_ADMIN} capability, and all tests ran as an unprivileged user, because \code{system.sh} refuses to run as root. \code{make tsan} runs the tests with address randomization switched off (\code{setarch -R}), which in Docker also needs \code{--security-opt seccomp=unconfined}.
 
 \subsection{Test Cases}
 \label{sec:testcases}
-\tabref{tab:tests} lists 25 test cases. The ``Actual output'' column quotes the captured output.
+\tabref{tab:tests} lists 40 test cases. Tags [A]--[E] mark the cases that reproduce a review finding (Section~\ref{sec:findings}). For the cases captured at commit \code{a7e489c} the ``Actual output'' column quotes the captured terminal output; for the cases added in this version it gives the test's own pass message or the value its assertion checks.
 
 {\footnotesize
 \setlength{\tabcolsep}{3.5pt}
-\begin{longtable}{@{}p{0.85cm}p{2.25cm}p{1.2cm}p{1.85cm}p{2.25cm}p{2.3cm}p{2.35cm}p{1.0cm}@{}}
+\begin{longtable}{@{}>{\raggedright\arraybackslash}p{0.85cm}>{\raggedright\arraybackslash}p{2.25cm}>{\raggedright\arraybackslash}p{1.2cm}>{\raggedright\arraybackslash}p{1.85cm}>{\raggedright\arraybackslash}p{2.25cm}>{\raggedright\arraybackslash}p{2.3cm}>{\raggedright\arraybackslash}p{2.35cm}>{\raggedright\arraybackslash}p{1.0cm}@{}}
 \caption{Test cases and results}\label{tab:tests}\\
 \toprule
 \textbf{ID} & \textbf{Objective} & \textbf{Module} & \textbf{Pre-\newline condition} & \textbf{Input} & \textbf{Expected output} & \textbf{Actual output} & \textbf{Result} \\
@@ -1604,55 +1730,71 @@ Performance & seek distance, waiting time and throughput per policy & \code{sche
 \endfoot
 \bottomrule
 \endlastfoot
-TC01 & FCFS service order and movement & M6 & none & head 53; textbook queue & order as queued; 640 & assertion holds; ``scheduler tests passed'' & Pass \\
-TC02 & SSTF service order and movement & M6 & none & same trace & 65, 67, 37, 14, 98, 122, 124, 183; 236 & assertion holds & Pass \\
-TC03 & SCAN service order and movement & M6 & direction $-1$ & same trace & 37, 14, 65, \ldots, 183; 236 & assertion holds & Pass \\
-TC04 & Format a valid image & M1 & no \code{disk.img} & \code{disk.img 16M} & 4096 blocks, 256 inodes, data at 10 & ``Formatted disk.img: 4096 blocks, 256 inodes, data starts at block 10'' & Pass \\
-TC05 & Never overwrite an image & M1 & \code{disk.img} exists & same command & error, exit 1 & ``open (\ldots): File exists'' & Pass \\
-TC06 & Reject invalid sizes & M1 & none & \code{10K}, \code{64K} & size error, exit 2 & ``size must be a positive multiple of 4096 (M/MiB/G/GiB accepted)'' & Pass \\
-TC07 & Mount and report geometry & M2 & formatted image & \code{--sched=sstf} & geometry printed; mount listed & ``scheduler=sstf''; type \code{fuse.schedfs} & Pass \\
-TC08 & Create, write and read a file & M3 & mounted & \code{echo}, \code{cat} & ``Operating Systems'' & ``Operating Systems'' & Pass \\
-TC09 & Large file through indirect block & M3, M4 & mounted & 100{,}000 random bytes & identical copy & \code{cmp}: ``identical''; size 100000 & Pass \\
-TC10 & Extend with \code{truncate} & M3, M4 & 18-byte file & \code{truncate -s 8192} & size 8192 & ``8192 bytes'' & Pass \\
-TC11 & Rename and delete & M3 & files exist & \code{mv}, \code{rm} & entries renamed, removed & listing shows only \code{demo.txt} & Pass \\
-TC12 & Name length limit (boundary) & M3 & mounted & 70-character name & \code{ENAMETOOLONG} & ``File name too long'' & Pass \\
-TC13 & Remove non-empty directory & M3 & directory has files & \code{rmdir} & \code{ENOTEMPTY} & ``Directory not empty'' & Pass \\
-TC14 & Rename onto existing target & M3 & both files exist & \code{mv a b} & refused (documented limit) & ``cannot overwrite \ldots: File exists'' & Pass \\
-TC15 & Read missing file & M3 & mounted & \code{cat missing.txt} & \code{ENOENT} & ``No such file or directory'' & Pass \\
-TC16 & Invalid mount options & M2 & none & \code{--sched=lifo}; \code{--alpha=-1} & usage; weight error & usage text; ``alpha and beta must be non-negative'' & Pass \\
-TC17 & Missing or foreign image & M2, M3 & none & \code{nosuch.img}; 1 MiB of zeros & clear error, exit 1 & ``No such file or directory''; ``Invalid argument'' & Pass \\
-TC18 & Persistence across remount & M3, M7 & data written; unmounted & remount with FCFS & same content & ``Operating Systems'' & Pass \\
-TC19 & Concurrent writers (integration) & M3--M7 & fresh image & 4 threads $\times$ 64 KiB & each file intact after remount & ``core persistence and concurrency tests passed'' & Pass \\
-TC20 & No data races & M3--M7 & TSan build & \code{test_core} & no reports; exit 0 & no reports; ``exit status: 0'' & Pass \\
-TC21 & Mounted tests, all policies & M1--M7 & \code{/dev/fuse} & \code{system.sh} & all steps succeed & ``FUSE system tests passed'' & Pass \\
-TC22 & Background (daemon) mount & M2, M7 & no \code{-f} & relative image path & I/O works; data persists & part of TC21; passed & Pass \\
-TC23 & Metrics and DEBUG log & M8 & \code{--verbose} & 20{,}000-byte write & unmount summary; allocations & ``allocated block 13'' \ldots\ ``125 requests, total seek 379 blocks'' & Pass \\
-TC24 & Benchmark reproducibility & M6, M9 & committed CSV & \code{schedfs-bench --all} & FCFS, SSTF, SCAN seek totals unchanged & all 15 equal; Adaptive differs in 3 of 5 (clock-dependent) & Pass \\
-TC25 & Policy effect on mounted FS & M5--M7 & same image per run & 4 writers + 4 readers, 3 trials & equal requests; SSTF $<$ FCFS & 4{,}927 requests each; SSTF $-40\,\%$ & Pass \\
+TC01 & FCFS service order and movement & M6 & simulated clock & head 53 moving down; textbook queue & order as queued; 640 & assertion holds; ``scheduler tests passed (119 checks)'' & Pass \\
+TC02 & SSTF service order and movement & M6 & same & same trace & 65, 67, 37, 14, 98, 122, 124, 183; 236 & assertion holds & Pass \\
+TC03 & SCAN order and edge travel [A] & M6 & direction $-1$ & same trace & 37, 14, (edge), 65, \ldots, 183; 236 & assertion holds & Pass \\
+TC04 & LOOK order and movement [A] & M6 & direction $-1$ & same trace & same order as SCAN; 208 & assertion holds & Pass \\
+TC05 & Deadline limits & M6 & deadline policy & deadlines very long; then 0 & SSTF order (236); FCFS order (640) & assertion holds & Pass \\
+TC06 & Movement through the real dispatcher [A] & M5--M7 & dispatcher paused until 8 reads are queued & textbook trace & SCAN 236, LOOK 208, FCFS 640 & assertion holds; ``regression tests passed'' & Pass \\
+TC07 & Distant request amid continuous nearby arrivals & M6 & 2{,}000 nearby requests, one every 100~\textmu s & far read at block 4000; test deadlines 5~ms / 50~ms & FCFS next; SSTF last; Deadline at $\approx$5~ms; far write at $\approx$50~ms & FCFS position 1; SSTF $>$190~ms (position 2000); Deadline 5.05~ms; write 50.05~ms & Pass \\
+TC08 & Adaptive bound [C] & M6 & Adaptive, $\alpha$ 0.7, $\beta$ 0.3 & old far request vs fresh nearby request, 10{,}000 decisions & far request never chosen; one 1{,}200 blocks away chosen at once & 0 picks in 10{,}000; nearby-bound request served at once & Pass \\
+TC09 & Deadline order and ties & M6 & mixed reads and writes & explicit timestamps & earliest deadline first; ties by arrival, then ID & assertion holds & Pass \\
+TC10 & Queue saturation and shutdown & M5 & queue capacity 2, full & a third producer; then a fourth and \code{rq_stop} & producer blocks until space; \code{-ESHUTDOWN}; queued requests drained & assertion holds & Pass \\
+TC11 & Simulation determinism & M6, M9 & simulated clock & same scenario twice & identical movement and waits & identical (asserted) & Pass \\
+TC12 & Format a valid image & M1 & no \code{disk.img} & \code{disk.img 16M} & 4096 blocks, 256 inodes, data at 10 & ``Formatted disk.img: 4096 blocks, 256 inodes, data starts at block 10'' & Pass \\
+TC13 & Never overwrite an image & M1 & \code{disk.img} exists & same command & error, exit 1 & ``open (\ldots): File exists'' & Pass \\
+TC14 & Reject invalid sizes & M1 & none & \code{10K}, \code{64K} & size error, exit 2 & ``size must be a positive multiple of 4096 (M/MiB/G/GiB accepted)'' & Pass \\
+TC15 & Mount and report geometry & M2 & formatted image & \code{--sched=sstf} & geometry printed; mount listed & ``scheduler=\allowbreak sstf''; type \code{fuse.schedfs} & Pass \\
+TC16 & Create, write and read a file & M3 & mounted & \code{echo}, \code{cat} & ``Operating Systems'' & ``Operating Systems'' & Pass \\
+TC17 & Large file through indirect block & M3, M4 & mounted & 100{,}000 random bytes & identical copy & \code{cmp}: ``identical''; size 100000 & Pass \\
+TC18 & Extend with \code{truncate} & M3, M4 & 18-byte file & \code{truncate -s 8192} & size 8192 & ``8192 bytes'' & Pass \\
+TC19 & Shrink inside a block, then extend [B] & M3, M4 & file ``ABCDEFGH'' & truncate to 3, then to 8 & ``ABC'' + 5 zero bytes & as expected (core API and through the mount) & Pass \\
+TC20 & Truncate edge cases and persistence [B] & M3, M4 & fresh files & write past EOF after shrink; partial second block; exact boundary; shrink to 0; remount & retained bytes kept, every other byte zero, also after remount & as expected; fsck clean & Pass \\
+TC21 & Rename and delete & M3 & files exist & \code{mv}, \code{rm} & entries renamed, removed & listing shows only \code{demo.txt} & Pass \\
+TC22 & Rename into own subtree [D] & M3 & \code{/a/b} exists & \code{rename /a /a/b/c} & \code{EINVAL}; through the mount \code{mv} fails & \code{-EINVAL}; \code{mv} refused & Pass \\
+TC23 & Name length limit (boundary) & M3 & mounted & 70-character name & \code{ENAMETOOLONG} & ``File name too long'' & Pass \\
+TC24 & Remove non-empty directory & M3 & directory has files & \code{rmdir} & \code{ENOTEMPTY} & ``Directory not empty'' & Pass \\
+TC25 & Rename onto existing target & M3 & both files exist & \code{mv a b} & refused (documented limit) & ``cannot overwrite \ldots: File exists'' & Pass \\
+TC26 & Read missing file & M3 & mounted & \code{cat missing.txt} & \code{ENOENT} & ``No such file or directory'' & Pass \\
+TC27 & Invalid mount options & M2 & none & \code{--sched=lifo}; \code{--alpha=-1} & usage text, exit 2 & usage text & Pass \\
+TC28 & Missing or foreign image & M2, M3 & none & \code{nosuch.img}; 1 MiB of zeros & clear error, exit 1 & ``No such file or directory''; ``Invalid argument'' & Pass \\
+TC29 & Persistence across remount & M3, M7 & data written; unmounted & remount with another policy & same content & ``Operating Systems'' & Pass \\
+TC30 & Concurrent writers (integration) & M3--M7 & fresh image & 4 threads $\times$ 64 KiB & each file intact after remount & ``core persistence and concurrency tests passed'' & Pass \\
+TC31 & Concurrent create of one name [D] & M3 & fresh image & 8 threads create \code{/same}, 40 rounds & exactly one succeeds; one directory entry & as expected & Pass \\
+TC32 & Unlink racing with readers and writers [D] & M3, M4 & \code{/victim}, \code{/keep} & 3 writers, 2 readers, 1 unlinker for 3~s & readers never see another file's bytes; \code{/keep} intact & as expected; fsck clean & Pass \\
+TC33 & Concurrent allocation and metadata order [D] & M4 & fresh image & 8 threads $\times$ 64 allocations, 5 rounds & on-disk bitmap and superblock equal memory & as expected (defensive fix; old code not failing) & Pass \\
+TC34 & Defects reproduced on the old code & M3, M4 & original file-system code & \code{check_old_}\allowbreak\code{defects.sh} & truncate, create, unlink, rename fail & ``old code FAILED'' for these four; \code{meta} passed (not reproduced) & Pass \\
+TC35 & No data races & M3--M7 & TSan build & \code{make tsan} (core and regression tests) & no reports; exit 0 & no reports in repeated runs (one early unexplained failure, Section~\ref{sec:limits}) & Pass \\
+TC36 & Mounted tests, all six policies & M1--M7 & \code{/dev/fuse} & \code{system.sh} & all steps succeed & ``FUSE system tests passed'' & Pass \\
+TC37 & Background (daemon) mount & M2, M7 & no \code{-f} & relative image path & I/O works; data persists & part of TC36; passed & Pass \\
+TC38 & Metrics and DEBUG log & M8 & \code{--verbose} & 20{,}000-byte write & unmount summary; allocations & ``allocated block 13'' \ldots\ ``125 requests, total seek 379 blocks'' (at \code{a7e489c}) & Pass \\
+TC39 & Foreground reads during background writes & M5--M9 & 3 runs $\times$ 10~s per cell & 6 read cells (3 workloads $\times$ 2 configurations) & Deadline p99 below FCFS & 22--56\,\% lower in all 6 cells & Pass \\
+TC40 & Foreground updates during background writes & M5--M9 & same & \code{bg2_update}, both configurations & Deadline p99 not above FCFS & model $-16$\,\%; direct $+24$\,\% & Not met \\
 \end{longtable}
 }
 
 \subsection{Testing Results}
 \label{sec:results}
-All 25 test cases passed. \tabref{tab:testsummary} groups them by level.
+All 38 correctness test cases passed. Of the two performance cases, one was met and one was not: with real \code{O_DIRECT} I/O the deadline policy made small foreground \emph{updates} slower than FCFS. \tabref{tab:testsummary} groups the cases by level.
 
 \begin{table}[H]
 \centering
 \caption{Summary of test results}
 \label{tab:testsummary}
 \small
-\begin{tabular}{@{}l l c c c@{}}
+\begin{tabular}{@{}l p{4.6cm} c c c@{}}
 \toprule
-\textbf{Level} & \textbf{Test cases} & \textbf{Executed} & \textbf{Passed} & \textbf{Failed} \\
+\textbf{Level} & \textbf{Test cases} & \textbf{Executed} & \textbf{Passed} & \textbf{Not met} \\
 \midrule
-Unit & TC01--TC03 & 3 & 3 & 0 \\
-Functional and boundary & TC04--TC12, TC23 & 10 & 10 & 0 \\
-Error handling & TC13--TC17 & 5 & 5 & 0 \\
-Integration and concurrency & TC18--TC20 & 3 & 3 & 0 \\
-System & TC21--TC22 & 2 & 2 & 0 \\
-Performance & TC24--TC25 & 2 & 2 & 0 \\
+Unit and simulation & TC01--TC05, TC07--TC11 & 10 & 10 & 0 \\
+Regression (findings A--D) & TC06, TC19, TC20, TC22, TC31--TC34 & 8 & 8 & 0 \\
+Functional and boundary & TC12--TC18, TC21, TC23, TC38 & 10 & 10 & 0 \\
+Error handling & TC24--TC28 & 5 & 5 & 0 \\
+Integration and concurrency & TC29, TC30, TC35 & 3 & 3 & 0 \\
+System & TC36, TC37 & 2 & 2 & 0 \\
+Performance (mounted) & TC39, TC40 & 2 & 1 & 1 \\
 \midrule
-\textbf{Total} & & \textbf{25} & \textbf{25} & \textbf{0} \\
+\textbf{Total} & & \textbf{40} & \textbf{39} & \textbf{1} \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -1660,192 +1802,274 @@ Performance & TC24--TC25 & 2 & 2 & 0 \\
 \noindent\textbf{Observations and limitations found during testing.}
 \begin{itemize}[leftmargin=1.4em]
   \item \code{make test} prints ``Ignoring invalid max threads value 4294967295 > max (100000)'' once per foreground mount (\figref{fig:term-tests}). This message comes from libfuse 3.14.0, which reports an uninitialised default when \code{fuse_main()} runs a multi-threaded loop. SchedFS does not set this value, and the message does not affect any test.
-  \item The formatter does not accept a \code{K} suffix (TC06). The message lists the accepted suffixes, but it could be clearer for a size such as \code{64K}, which is a multiple of 4096.
-  \item \code{rename} onto an existing name is refused rather than replacing the target (TC14). This is a documented limitation, not a crash.
-  \item Timing columns depend on the machine. On the Linux run, SSTF and SCAN have almost the same average wait on the concurrent trace (1.35 and 1.37~ms), whereas the repository's committed CSV, recorded on another machine, ranks SCAN clearly best. Only the seek columns of FCFS, SSTF and SCAN are exactly repeatable.
+  \item The formatter does not accept a \code{K} suffix (TC14). The message lists the accepted suffixes, but it could be clearer for a size such as \code{64K}, which is a multiple of 4096.
+  \item \code{rename} onto an existing name is refused rather than replacing the target (TC25). This is a documented limitation, not a crash.
+  \item The metadata-ordering risk (TC33) was not reproduced on the old code in 5 rounds of 8 threads; it was fixed defensively, and \code{check_old_defects.sh} reports it as ``not reproduced''.
+  \item ThreadSanitizer is supporting evidence only: it sees the interleavings that happened in a run, not all of them. This is why the targeted regression tests exist.
 \end{itemize}
 
-\subsubsection{Benchmark results}
-\tabref{tab:bench} reports the benchmark run captured in \figref{fig:term-bench}. \figref{fig:chart-seek} and \figref{fig:chart-wait} plot the same data.
+\subsubsection{Simulation results (deterministic; not a measurement)}
+\label{sec:simres}
+\code{schedfs-bench} runs the real \code{scheduler_pick()} and \code{scheduler_advance()} with a simulated clock and a modeled service time, so every number below is exactly repeatable and describes the model, not the file system or a disk. \tabref{tab:sim} gives the modeled movement on the five static traces (head at block 53 moving down, all requests pending at time 0, all reads). Because the read deadline is 0~ms, every request is overdue at once, so on these traces the Deadline policy serves in arrival order and equals FCFS. The trace called ``concurrent'' in the earlier version is renamed ``interleaved'': it is a fixed list of near and far blocks, not live concurrency.
 
 \begin{table}[H]
 \centering
-\caption{Benchmark results (Linux run, \figref{fig:term-bench}); best seek per workload in bold}
-\label{tab:bench}
+\caption{Simulation: modeled movement (blocks) on the static traces; lowest per trace in bold}
+\label{tab:sim}
 \small
-\begin{tabular}{@{}l l r r r r@{}}
-\toprule
-\textbf{Workload} & \textbf{Policy} & \makecell[r]{\textbf{Total seek}\\\textbf{(blocks)}} & \makecell[r]{\textbf{Avg. wait}\\\textbf{(ms)}} & \makecell[r]{\textbf{Max. wait}\\\textbf{(ms)}} & \makecell[r]{\textbf{Throughput}\\\textbf{(req/s)}} \\
-\midrule
-\multirow{4}{*}{Sequential (8)} & FCFS & 50 & 0.113 & 0.162 & 44{,}185 \\
- & SSTF & \textbf{43} & 0.102 & 0.165 & 45{,}078 \\
- & SCAN & \textbf{43} & 0.101 & 0.155 & 47{,}900 \\
- & Adaptive & 50 & 0.113 & 0.162 & 44{,}185 \\
-\midrule
-\multirow{4}{*}{Random (7)} & FCFS & 631 & 0.633 & 1.191 & 5{,}252 \\
- & SSTF & 295 & 0.265 & 0.629 & 10{,}589 \\
- & SCAN & \textbf{229} & 0.194 & 0.454 & 13{,}231 \\
- & Adaptive & 295 & 0.371 & 0.629 & 10{,}586 \\
-\midrule
-\multirow{4}{*}{Clustered (7)} & FCFS & \textbf{58} & 0.106 & 0.166 & 37{,}294 \\
- & SSTF & \textbf{58} & 0.106 & 0.165 & 37{,}455 \\
- & SCAN & 164 & 0.288 & 0.377 & 17{,}547 \\
- & Adaptive & \textbf{58} & 0.109 & 0.170 & 36{,}459 \\
-\midrule
-\multirow{4}{*}{Mixed (11)} & FCFS & 736 & 0.538 & 1.246 & 6{,}944 \\
- & SSTF & 237 & 0.190 & 0.510 & 18{,}595 \\
- & SCAN & 229 & 0.162 & 0.488 & 19{,}314 \\
- & Adaptive & \textbf{209} & 0.164 & 0.448 & 20{,}776 \\
-\midrule
-\multirow{4}{*}{Concurrent (16)} & FCFS & 27{,}402 & 18.923 & 46.986 & 291 \\
- & SSTF & \textbf{4{,}029} & 1.355 & 6.216 & 1{,}946 \\
- & SCAN & 4{,}053 & 1.373 & 6.265 & 1{,}935 \\
- & Adaptive & 4{,}523 & 2.216 & 7.205 & 1{,}737 \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\pgfplotsset{
-  policybars/.style={
-    ybar, bar width=5.5pt, width=\linewidth, height=6.4cm, enlarge x limits=0.12,
-    symbolic x coords={Sequential,Random,Clustered,Mixed,Concurrent}, xtick=data,
-    tick label style={font=\scriptsize}, label style={font=\small},
-    legend style={font=\scriptsize, at={(0.5,1.03)}, anchor=south, legend columns=4, draw=none},
-    ymajorgrids, grid style={gray!25}, log origin=infty},
-}
-\begin{figure}[H]
-\centering
-\begin{tikzpicture}
-\begin{axis}[policybars, ymode=log, ymin=20, ymax=60000, ylabel={total seek (blocks, log scale)}]
-  \addplot[fill=gray!60, draw=gray!80!black] coordinates {(Sequential,50) (Random,631) (Clustered,58) (Mixed,736) (Concurrent,27402)};
-  \addplot[fill=blue!55, draw=blue!70!black] coordinates {(Sequential,43) (Random,295) (Clustered,58) (Mixed,237) (Concurrent,4029)};
-  \addplot[fill=orange!70, draw=orange!80!black] coordinates {(Sequential,43) (Random,229) (Clustered,164) (Mixed,229) (Concurrent,4053)};
-  \addplot[fill=teal!55, draw=teal!70!black] coordinates {(Sequential,50) (Random,295) (Clustered,58) (Mixed,209) (Concurrent,4523)};
-  \legend{FCFS, SSTF, SCAN, Adaptive}
-\end{axis}
-\end{tikzpicture}
-\caption{Total seek distance per workload and policy (lower is better).}
-\label{fig:chart-seek}
-\end{figure}
-
-\begin{figure}[H]
-\centering
-\begin{tikzpicture}
-\begin{axis}[policybars, ymode=log, ymin=0.05, ymax=60, ylabel={average wait (ms, log scale)}]
-  \addplot[fill=gray!60, draw=gray!80!black] coordinates {(Sequential,0.112635) (Random,0.632521) (Clustered,0.106215) (Mixed,0.537896) (Concurrent,18.92333)};
-  \addplot[fill=blue!55, draw=blue!70!black] coordinates {(Sequential,0.102348) (Random,0.264811) (Clustered,0.105727) (Mixed,0.190065) (Concurrent,1.354655)};
-  \addplot[fill=orange!70, draw=orange!80!black] coordinates {(Sequential,0.101206) (Random,0.193812) (Clustered,0.287521) (Mixed,0.162019) (Concurrent,1.37267)};
-  \addplot[fill=teal!55, draw=teal!70!black] coordinates {(Sequential,0.11254) (Random,0.371026) (Clustered,0.109257) (Mixed,0.163968) (Concurrent,2.215624)};
-  \legend{FCFS, SSTF, SCAN, Adaptive}
-\end{axis}
-\end{tikzpicture}
-\caption{Average waiting time per workload and policy (lower is better).}
-\label{fig:chart-wait}
-\end{figure}
-
-\noindent\textbf{Analysis.}
-\begin{itemize}[leftmargin=1.4em]
-  \item \emph{Contention favours position-aware policies.} On the concurrent trace FCFS moves the head 27{,}402 blocks against 4{,}029 for SSTF, which is 6.8 times as far, and its average wait is about 14 times longer (18.9 against 1.35~ms).
-  \item \emph{No policy wins everywhere.} SCAN is best on the random trace (229) but worst on the clustered trace (164 against 58), because it travels to the disk edge even when every request is nearby.
-  \item \emph{The Adaptive policy depends on timing.} On the mixed trace it beat every other policy in this run (209), while the committed CSV recorded 237. Its score uses measured waiting times, so small timing differences change its choices. This is the expected cost of ageing based on real time.
-\end{itemize}
-
-\subsubsection{Scheduling on the mounted file system}
-The benchmark isolates the scheduler. To measure the policies on real file-system traffic, the same workload was run on a fresh copy of one image under each policy, three times each (\figref{fig:term-policies}). Four background \code{head} processes each wrote 256~KiB at the same time, four \code{cat} processes then read the files back, and the files were deleted. Every run served exactly 4{,}927 block requests, so only the \emph{order} of service differed. \tabref{tab:mounted} and \figref{fig:chart-mounted} summarise the results.
-
-\begin{table}[H]
-\centering
-\caption{Total head movement on the mounted file system (4{,}927 requests per run)}
-\label{tab:mounted}
-\small
+\setlength{\tabcolsep}{3.2pt}
 \begin{tabular}{@{}l r r r r r r@{}}
 \toprule
-\textbf{Policy} & \textbf{Trial 1} & \textbf{Trial 2} & \textbf{Trial 3} & \textbf{Mean} & \textbf{Per request} & \textbf{vs. FCFS} \\
+\textbf{Trace (requests)} & \textbf{FCFS} & \textbf{SSTF} & \textbf{SCAN} & \textbf{LOOK} & \textbf{Adaptive} & \textbf{Deadline} \\
 \midrule
-FCFS & 199{,}289 & 195{,}909 & 186{,}121 & 193{,}773 & 39.3 & --- \\
-SSTF & 117{,}041 & 112{,}565 & 118{,}935 & \textbf{116{,}180} & \textbf{23.6} & $-40.0$\,\% \\
-SCAN & 126{,}521 & 134{,}431 & 136{,}659 & 132{,}537 & 26.9 & $-31.6$\,\% \\
-Adaptive & 184{,}475 & 179{,}565 & 195{,}087 & 186{,}376 & 37.8 & $-3.8$\,\% \\
+sequential (8) & 50 & \textbf{43} & \textbf{43} & \textbf{43} & \textbf{43} & 50 \\
+random (7) & 631 & 295 & 229 & \textbf{221} & 295 & 631 \\
+clustered (7) & \textbf{58} & \textbf{58} & 164 & \textbf{58} & \textbf{58} & \textbf{58} \\
+mixed (11) & 736 & 237 & 229 & \textbf{209} & 237 & 736 \\
+interleaved (16) & 27{,}402 & \textbf{4{,}029} & 4{,}053 & \textbf{4{,}029} & \textbf{4{,}029} & 27{,}402 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\noindent The two dynamic scenarios have timed arrivals (\tabref{tab:simdyn}). In \code{stream_far} a saturated stream of nearby writes (one every 100~\textmu s, constant 100~\textmu s service) runs while a distant read (a ``probe'') arrives every 20~ms. In \code{two_regions} two sequential write streams in distant regions run with a movement-dependent service time ($50\,\mu s + 0.5\,\mu s$ per block) while a small read near the start arrives every 24~ms.
+
+\begin{table}[H]
+\centering
+\caption{Simulation: dynamic scenarios (waits in simulated ms, movement in blocks)}
+\label{tab:simdyn}
+\small
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{@{}l r r r r r r@{}}
+\toprule
+ & \multicolumn{3}{c}{\textbf{\code{stream_far}}} & \multicolumn{3}{c}{\textbf{\code{two_regions}}} \\
+\cmidrule(lr){2-4}\cmidrule(l){5-7}
+\textbf{Policy} & \makecell[r]{\textbf{probe wait}\\\textbf{mean / max}} & \makecell[r]{\textbf{all waits}\\\textbf{mean}} & \textbf{movement} & \makecell[r]{\textbf{probe wait}\\\textbf{mean / max}} & \makecell[r]{\textbf{all waits}\\\textbf{mean}} & \textbf{movement} \\
+\midrule
+FCFS & 0.95 / 1.90 & 1.02 & 82{,}323 & 0.00 / 0.00 & 0.42 & 12{,}256{,}403 \\
+SSTF & 203.95 / 394.90 & 1.02 & 9{,}734 & 1.05 / 1.05 & 0.21 & 11{,}688{,}971 \\
+SCAN & 3.16 / 6.10 & 1.02 & 503{,}780 & 1.56 / 3.98 & 0.79 & 11{,}718{,}861 \\
+LOOK & 3.16 / 6.10 & 1.02 & 81{,}152 & 1.05 / 1.05 & 0.21 & 11{,}688{,}971 \\
+Adaptive & 203.95 / 393.00 & 1.02 & 9{,}867 & 1.05 / 1.05 & 0.21 & 11{,}688{,}971 \\
+Deadline & 0.005 / 0.10 & 1.02 & 82{,}399 & 0.00 / 0.00 & 0.22 & 11{,}512{,}775 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\noindent In \code{stream_far} SSTF and Adaptive leave the distant reads waiting for up to 395 and 393 simulated ms, the starvation discussed in Section~\ref{sec:adaptive}; the Deadline policy serves each probe almost at once (mean 0.005~ms), with almost the same movement as FCFS (82{,}399 against 82{,}323 blocks). In \code{two_regions} the Deadline policy keeps the probes at zero wait and has the lowest movement and nearly SSTF's mean wait. The overall mean wait is the same for every policy in \code{stream_far} because the service time is constant there. These are properties of the model; the mounted experiments below test whether the effect survives on a real file system.
+
+\subsubsection{Measured results on the mounted file system}
+\label{sec:mountedres}
+\textbf{Question.} While background workers write large files, does the deadline policy keep small foreground file operations responsive, compared with SchedFS's other policies, and what does it cost the background work?
+
+\textbf{Setup.} Every run used a fresh 64~MiB image (16{,}384 blocks) mounted with libfuse defaults (no kernel or writeback cache) in the environment above. One foreground process opens \code{fg.dat} (64~KiB), reads or updates 4~KiB at a seeded random offset and closes it, every 20~ms; N background processes each write 2~MiB files in 128~KiB writes, over and over. The workloads are \code{bg2_read} (2 writers + small reads), \code{bg2_mix} (reads and updates), \code{bg4_read} (4 writers), \code{copy2_read} (2 copiers, so the background also reads), \code{bg2_update} (foreground updates) and \code{light} (no background). Each cell is 3 runs (seeds 1001--1003) of 10~s after a 1~s warm-up, about 500 foreground samples per run and 1{,}500 per cell. Two storage configurations were measured:
+\begin{itemize}[leftmargin=1.4em]
+  \item \textbf{direct}: \code{--direct-io}, so block requests bypass the host page cache and reach the virtual disk of the WSL~2 VM (an SSD on the host); no modeled delay.
+  \item \textbf{model}: the same plus \code{--model-base-us=100 --model-us-per-block=0.25}, so each request is held for at least $100\,\mu s + 0.25\,\mu s \times$ blocks moved (a full stroke $\approx$ 4.2~ms). This \emph{models} a disk where position matters; the latencies are measured, but on a modeled device.
+\end{itemize}
+Every policy gets the same workload specification, seed and a fresh image, but the block request sequences are not identical, because concurrency and allocation timing change which blocks are requested when; the trace records the actual sequence. Foreground latency is the end-to-end time of open + 4~KiB read or update + close measured by the workload itself; background throughput counts bytes of rounds completed in the measured window. The values are the mean over the 3 runs of each run's p99; the per-run ranges and all other columns are in \code{results/mounted/summary.md}.
+
+\begin{table}[H]
+\centering
+\caption{Measured, \textbf{direct} configuration: foreground p99 latency in ms (upper line) and background throughput in MB/s (lower line)}
+\label{tab:direct}
+\footnotesize
+\setlength{\tabcolsep}{3.5pt}
+\renewcommand{\arraystretch}{1.45}
+\begin{tabular}{@{}l c c c c c r@{}}
+\toprule
+\textbf{Workload} & \textbf{FCFS} & \textbf{SSTF} & \textbf{LOOK} & \textbf{Adaptive} & \textbf{Deadline} & \makecell[r]{\textbf{Deadline}\\\textbf{vs FCFS}} \\
+\midrule
+2 writers + reads & \makecell{4.98\\21.84} & \makecell{11.29\\22.44} & \makecell{7.41\\19.50} & \makecell{5.20\\19.95} & \makecell{\textbf{3.89}\\19.05} & \makecell[r]{p99 $-22$\,\%\\MB/s $-13$\,\%} \\
+2 writers + reads/updates & \makecell{7.20\\18.10} & \makecell{14.28\\21.10} & \makecell{8.46\\21.62} & \makecell{6.50\\20.52} & \makecell{7.11\\19.17} & \makecell[r]{$-1$\,\%\\$+6$\,\%} \\
+4 writers + reads & \makecell{8.73\\18.59} & \makecell{19.95\\18.81} & \makecell{9.96\\18.75} & \makecell{8.17\\17.70} & \makecell{\textbf{4.22}\\17.80} & \makecell[r]{$-52$\,\%\\$-4$\,\%} \\
+2 copiers + reads & \makecell{10.64\\9.46} & \makecell{25.14\\9.90} & \makecell{15.51\\8.77} & \makecell{11.91\\8.03} & \makecell{\textbf{7.42}\\9.04} & \makecell[r]{$-30$\,\%\\$-4$\,\%} \\
+2 writers + updates & \makecell{\textbf{5.83}\\19.54} & \makecell{13.74\\20.40} & \makecell{7.97\\18.42} & \makecell{6.88\\18.35} & \makecell{7.22\\20.66} & \makecell[r]{$\mathbf{+24}$\,\%\\$+6$\,\%} \\
+no background & 2.27 & 2.52 & 2.79 & 2.75 & 2.78 & \makecell[r]{within run-to-run\\range} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[H]
+\centering
+\caption{Measured, \textbf{model} configuration (modeled service time $100\,\mu s + 0.25\,\mu s$/block on \code{O_DIRECT}): foreground p99 latency in ms (upper line) and background throughput in MB/s (lower line)}
+\label{tab:model}
+\footnotesize
+\setlength{\tabcolsep}{3.5pt}
+\renewcommand{\arraystretch}{1.45}
+\begin{tabular}{@{}l c c c c c r@{}}
+\toprule
+\textbf{Workload} & \textbf{FCFS} & \textbf{SSTF} & \textbf{LOOK} & \textbf{Adaptive} & \textbf{Deadline} & \makecell[r]{\textbf{Deadline}\\\textbf{vs FCFS}} \\
+\midrule
+2 writers + reads & \makecell{20.64\\3.40} & \makecell{33.85\\4.56} & \makecell{21.98\\3.65} & \makecell{21.03\\3.45} & \makecell{\textbf{15.14}\\3.66} & \makecell[r]{p99 $-27$\,\%\\MB/s $+8$\,\%} \\
+2 writers + reads/updates & \makecell{25.20\\3.06} & \makecell{41.46\\4.66} & \makecell{26.25\\3.53} & \makecell{24.14\\3.13} & \makecell{\textbf{18.90}\\3.42} & \makecell[r]{$-25$\,\%\\$+12$\,\%} \\
+4 writers + reads & \makecell{70.20\\1.18} & \makecell{44.01\\3.02} & \makecell{\textbf{28.80}\\1.91} & \makecell{59.74\\1.32} & \makecell{30.76\\1.22} & \makecell[r]{$-56$\,\%\\$+3$\,\%} \\
+2 copiers + reads & \makecell{40.34\\0.89} & \makecell{45.88\\1.90} & \makecell{39.46\\1.36} & \makecell{44.85\\0.90} & \makecell{\textbf{26.93}\\0.81} & \makecell[r]{$-33$\,\%\\$-9$\,\%} \\
+2 writers + updates & \makecell{22.73\\3.10} & \makecell{40.74\\4.61} & \makecell{25.70\\3.58} & \makecell{22.55\\3.16} & \makecell{\textbf{19.05}\\3.55} & \makecell[r]{$-16$\,\%\\$+15$\,\%} \\
+no background & 3.65 & 3.49 & 3.64 & 3.53 & 3.64 & \makecell[r]{same} \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \begin{figure}[H]
 \centering
-\begin{tikzpicture}
-\begin{axis}[ybar, bar width=26pt, width=0.78\linewidth, height=6cm,
-    symbolic x coords={FCFS,SSTF,SCAN,Adaptive}, xtick=data, ymin=0, ymax=230000,
-    ylabel={total seek (blocks)}, tick label style={font=\scriptsize}, label style={font=\small},
-    scaled y ticks=base 10:-3, ytick scale label code/.code={\scriptsize$\times 10^{3}$},
-    ymajorgrids, grid style={gray!25}, enlarge x limits=0.18]
-  \addplot[fill=blue!35, draw=blue!60!black,
-           error bars/.cd, y dir=both, y explicit, error bar style={thick, black}]
-    coordinates {
-      (FCFS,193773) += (0,5516) -= (0,7652)
-      (SSTF,116180) += (0,2755) -= (0,3615)
-      (SCAN,132537) += (0,4122) -= (0,6016)
-      (Adaptive,186376) += (0,8711) -= (0,6811)};
-\end{axis}
-\end{tikzpicture}
-\caption{Mean total seek on the mounted file system; error bars show the minimum and maximum of three trials.}
-\label{fig:chart-mounted}
+\includegraphics[width=0.8\linewidth]{figures/results/model_latency_throughput.png}
+\caption[Measured p99 and throughput, model configuration]{Measured foreground p99 latency (top) and background throughput (bottom) in the \emph{model} configuration; bars are means of 3 runs, whiskers the minimum and maximum. The latencies are measured, but the device has a modeled seek time, so SCAN pays for every trip to the disk edge.}
+\label{fig:res-model}
 \end{figure}
 
-\noindent The ranking on real traffic is SSTF, then SCAN, then Adaptive, then FCFS, and the spread between trials is small compared with the differences between policies. The Adaptive policy behaves almost like FCFS here, and its score explains why. The distance term is normalised by the disk size, 4{,}096 blocks. Requests on this small image are rarely more than a few hundred blocks apart, so $\alpha \cdot d/N$ stays below about $0.05$, while $\beta \cdot w/w_{\max}$ ranges up to $0.3$. The age term dominates, and the policy serves requests roughly in arrival order. Lowering $\beta$ or normalising distance by the span of the pending requests would move it towards SSTF. This is a design improvement identified by testing.
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.8\linewidth]{figures/results/direct_latency_throughput.png}
+\caption[Measured p99 and throughput, direct configuration]{The same measurements in the \emph{direct} configuration (real \code{O_DIRECT} I/O to the WSL~2 virtual disk, no modeled delay). Differences in throughput are mostly within the run-to-run ranges here, because block distance costs little on this device.}
+\label{fig:res-direct}
+\end{figure}
 
+\begin{figure}[H]
+\centering
+\includegraphics[width=\linewidth]{figures/results/model_tradeoff.png}
+\caption[Latency--throughput trade-off, model configuration]{Trade-off in the \emph{model} configuration: each point is one policy (mean of 3 runs); lower and further right is better. SSTF has the most throughput and a high tail latency; Deadline has the lowest tail latency except with 4 writers, where LOOK is slightly lower and faster.}
+\label{fig:res-tradeoff}
+\end{figure}
+
+\noindent\textbf{SCAN} is left out of the two tables because it is an outlier: under the modeled seek time every reversal pays the trip to the disk edge (16{,}384 blocks), so its p99 is 82--119~ms with background load and 36.7~ms even with none; in the direct configuration it was 6.5--14.8~ms with background load. That is the cost of the SCAN definition now being charged consistently (finding A); LOOK is the practical variant.
+
+\noindent\textbf{Host file system, for reference only.} The same workload on the container's own Linux file system (overlayfs on ext4 in the WSL~2 VM, page cache on, no FUSE, no scheduler) had a foreground p99 of 0.04--0.07~ms. SchedFS is about two orders of magnitude slower per operation, because every operation crosses FUSE and every block goes through one queue to uncached \code{O_DIRECT} I/O. This is a reference point, not a scheduling comparison.
+
+\noindent\textbf{Does the workload exercise the scheduler?} Yes, with background load: in every background workload 93--100\,\% of foreground block requests found background requests already waiting, the queue held 1.1--3.9 requests on average when the scheduler picked, and one foreground operation issued 11.5 (reads) to 15.6 (copy workload) block requests. 81--93\,\% (direct) and 94--99\,\% (model) of a foreground operation's time was spent in the block layer, so the order of service matters. Without background load the queue held one request at every pick, so the policies cannot differ, which is what the ``no background'' rows show: no scheduling overhead is measurable at this scale.
+
+\noindent\textbf{What the results say.}
+\begin{itemize}[leftmargin=1.4em]
+  \item \emph{Deadline versus FCFS}, the fair baseline that never starves: lower foreground p99 by 16--56\,\% in 8 of the 10 background cells, about equal in one ($-1$\,\%) and worse in one ($+24$\,\%). In the six read cells (\code{bg2_read}, \code{bg4_read}, \code{copy2_read} in both configurations) the reduction is 22--56\,\% and the per-run ranges of the two policies do not overlap. Background throughput changed by $-13$\,\% to $+6$\,\% in the direct configuration (mostly inside the run-to-run ranges) and by $-9$\,\% to $+15$\,\% in the model configuration.
+  \item \emph{Deadline versus SSTF}, pure locality: 30--79\,\% lower foreground p99 in every background cell. The cost is background throughput in the model configuration, 20--60\,\% less, where SSTF's locality pays off but leaves foreground requests waiting: SSTF's longest foreground queue wait was 10--55~ms, Deadline's 0.9--7.6~ms. In the direct configuration the throughput difference to SSTF is 1--15\,\%.
+  \item \emph{Where Deadline is not best}: with 4 writers on the modeled disk, LOOK had a slightly lower p99 (28.80 against 30.76~ms) and more throughput (1.91 against 1.22~MB/s). For foreground updates in the direct configuration, FCFS and Adaptive had a lower p99, and Deadline was 24\,\% worse than FCFS, outside the run-to-run ranges: the foreground's own block writes get the 2~ms write deadline and can wait behind other overdue writes. With mixed reads and updates in the direct configuration Deadline and FCFS were equal ($-1$\,\%).
+  \item \emph{Block level}: Deadline cut the foreground requests' 99th-percentile queue wait to 0.3--2.8~ms (SSTF 4.7--15.4~ms), and this carried through to the application p99 where the foreground operations were reads.
+\end{itemize}
+
+\subsubsection{Tuning of the deadlines}
+\label{sec:tuning}
+The deadlines were chosen before the evaluation runs, on separate tuning runs with seed 101 (2 runs of 8~s per cell; the evaluation seeds 1001--1003 were not used). The rule: the lowest mean of (p99 / FCFS p99) over the tuning cells, with background throughput not clearly below FCFS.
+\begin{enumerate}[leftmargin=1.6em]
+  \item \textbf{Read deadline} (\code{bg2_read}, write deadline 50~ms, read deadline 0--5~ms). Mean p99 / FCFS p99 over the two configurations: 0~ms 0.69, 0.1~ms 0.80, 0.25~ms 0.99, 0.5~ms 1.33, 1~ms 1.59, 2~ms 1.79, 5~ms 1.81. This fits the fact that a file operation is a chain of about 11 dependent requests, so a read deadline is paid many times per operation. Background throughput at 0~ms was 1.11 and 1.12 times FCFS. 0~ms was chosen.
+  \item \textbf{Write deadline.} An earlier full evaluation run with a 50~ms write deadline showed that foreground \emph{updates} had a much worse tail than under FCFS: their block writes queued behind nearby background writes. Writes were then tuned on \code{bg2_read} and \code{bg2_update} with read deadline 0 (\tabref{tab:tunew}, \figref{fig:tunew}). 1~ms had the lowest mean but cost 22\,\% of background throughput in the direct update cell, outside that cell's run-to-run variation; 2~ms was chosen. Even at 2~ms, foreground updates in the direct configuration stay slower than under FCFS at p99, which the evaluation confirmed.
+\end{enumerate}
+
+\begin{table}[H]
+\centering
+\caption{Write-deadline tuning (seed 101): ratios to FCFS in the cells direct read, direct update, model read, model update}
+\label{tab:tunew}
+\small
+\begin{tabular}{@{}l c c c@{}}
+\toprule
+\textbf{Write deadline} & \textbf{p99 / FCFS p99} & \textbf{Mean} & \textbf{Background MB/s / FCFS} \\
+\midrule
+1 ms & 0.70, 1.06, 0.73, 0.82 & 0.83 & 1.22, 0.78, 1.08, 1.11 \\
+\textbf{2 ms (chosen)} & 0.63, 1.26, 0.67, 0.82 & 0.85 & 1.38, 0.92, 1.12, 1.15 \\
+5 ms & 0.89, 2.11, 0.63, 1.06 & 1.17 & 1.04, 0.84, 1.12, 1.22 \\
+10 ms & 0.77, 2.30, 0.69, 1.38 & 1.28 & 1.01, 0.90, 1.10, 1.30 \\
+50 ms & 12.58, 1.90, 0.68, 1.72 & 4.22 & 0.92, 1.01, 1.14, 1.29 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\linewidth]{figures/results/tuning_write.png}
+\caption[Write-deadline tuning]{Write-deadline tuning on seed 101 (not an evaluation seed): foreground p99 relative to FCFS for reads and updates in the direct (left) and model (right) configurations. The 12.58 at 50~ms in the direct read cell comes from one run with a 145~ms outlier; without it 50~ms is still the worst for updates.}
+\label{fig:tunew}
+\end{figure}
+
+\subsection{Review Findings and Fixes}
+\label{sec:findings}
+A review of the previous version raised five findings. Each was checked, and the result is recorded in \tabref{tab:findings}; the test cases that reproduce them are tagged in \tabref{tab:tests}.
+
+{\small
+\begin{longtable}{@{}p{0.5cm}p{4.6cm}p{9.5cm}@{}}
+\caption{Review findings, status and fixes}\label{tab:findings}\\
+\toprule
+ & \textbf{Finding} & \textbf{Status, fix and evidence} \\
+\midrule
+\endfirsthead
+\toprule
+ & \textbf{Finding} & \textbf{Status, fix and evidence} \\
+\midrule
+\endhead
+\bottomrule
+\endfoot
+A & SCAN movement differed between the benchmark/test (edge travel, 236) and the mounted metrics (208). & Confirmed. One movement model, \code{scheduler_advance()}, is used by the dispatcher, the simulator and the tests; SCAN (236, edge charged) and LOOK (208) are separate policies; checked through the real dispatcher (TC03, TC04, TC06). \\
+B & Shrinking a file inside a block left the discarded bytes, which reappeared on a later extension. & Confirmed defect, fixed: \code{truncate} zeroes the discarded tail of the partial block (``ABCDEFGH'' $\rightarrow$ 3 $\rightarrow$ 8 gives ``ABC'' + 5 zero bytes). Tests for partial blocks, exact boundaries, sparse extension, writes past the end and remount persistence (TC19, TC20); fails on the old code (TC34). \\
+C & The Adaptive policy was claimed to prevent starvation through ageing. & Claim withdrawn. The age term is bounded by $\beta$, so a request farther than $(\beta/\alpha)\,N$ beyond nearby work is never chosen while nearby work arrives: 0 picks in 10{,}000 decisions (TC08). Adaptive is kept as a heuristic baseline with no starvation guarantee. \\
+D & Concurrency: \code{unlink} without the inode lock, and other races. & Confirmed and fixed: \code{unlink} freed blocks without the inode lock (a reader saw another file's data after inode reuse); concurrent \code{create} of one name made duplicates; \code{rename} could move a directory into its own subtree (now \code{EINVAL}); \code{statfs} read counters without the lock. New \code{ns_lock}, lookups that hold it until the inode lock is taken, \code{unlink}/\code{rmdir} that free under the inode write lock, and \code{bitmap_io_lock}/\code{super_io_lock} for metadata write order (a suspected risk, not reproduced, fixed defensively). New global lock order (\figref{fig:locks}). TC22, TC31--TC34; \code{make tsan} clean in repeated runs (TC35). \\
+E & Benchmark claims mixed simulation and measurement. & Confirmed. \code{schedfs-bench} is now a deterministic simulation with a simulated clock (\code{src/sched/sim.c}) and is labelled as such; the ``concurrent'' trace is renamed ``interleaved''; dynamic scenarios \code{stream_far} and \code{two_regions} were added. Mounted experiments are separate and measured: \code{experiments.py}, \code{schedfs-workload}, \code{analyze_run.py}, \code{report_results.py}, with a per-request trace. Modeled movement is never presented as a speed-up. \\
+\end{longtable}
+}
+
+\subsection{Limitations and Final Assessment}
+\label{sec:limits}
+\textbf{Limitations.}
+\begin{itemize}[leftmargin=1.4em]
+  \item All measurements come from one machine (Windows~11 + WSL~2, an SSD behind a virtual disk). No physical hard disk was measured; the \emph{model} configuration's seek time is a model, and its results show how the policies behave on such a device, not what a real disk would do.
+  \item The deadline policy classifies requests only as reads or writes. It helps foreground \emph{reads} during background writes; it did not help foreground \emph{updates} with real I/O (24\,\% worse than FCFS at p99), and with 4 writers on the modeled disk LOOK was slightly better.
+  \item Deadlines are not real-time guarantees: the dispatcher is non-preemptive, a file operation is a chain of requests, and under overload the policy degrades to earliest-deadline-first.
+  \item The deadlines were tuned on one workload family on the same machine (with a separate seed); other workloads may need other values.
+  \item Every operation crosses FUSE, so SchedFS is about two orders of magnitude slower per operation than the host file system with its page cache.
+  \item No journal or crash recovery (a clean unmount is required), no hard or symbolic links, no permission enforcement, files up to 1{,}036 blocks and 256 inodes.
+  \item ThreadSanitizer: one early run of \code{make tsan} failed once with a message that was not captured; 28 later runs (8 runs of \code{make tsan} or the standalone TSan binaries, and 20 logged runs of the core and regression tests) passed with no warnings. The early failure is unexplained. A clean TSan run is supporting evidence, not proof of the absence of races.
+\end{itemize}
+
+\noindent\textbf{Final assessment.} SchedFS is a working, mountable Linux file system whose block requests are all scheduled, and its deadline policy provides a measured responsiveness improvement for one clearly defined situation. The baseline is SchedFS's own FCFS, SSTF, SCAN, LOOK and Adaptive policies on identical workloads, on the same mounted file system; no claim is made about kernel file systems or kernel I/O schedulers. The condition is small foreground reads while background processes write or copy large files, measured both with real \code{O_DIRECT} I/O to the WSL~2 virtual disk and with a modeled seek time on one machine. Under that condition the deadline policy lowered the foreground 99th-percentile latency by 22--56\,\% relative to FCFS and by 30--79\,\% relative to SSTF, with non-overlapping run-to-run ranges against FCFS. The cost is in three places. First, relative to SSTF it gives up 20--60\,\% of background throughput when seek time is modeled, because it uses locality only within a 2~ms window; relative to FCFS, background throughput stayed within $-13$\,\% to $+15$\,\%. Second, with real I/O it made small foreground updates 24\,\% slower than FCFS at p99, so it is not better than FCFS for updates in the direct configuration. Third, with four writers on the modeled disk, LOOK was slightly better. The project therefore meets its aim for everyday \emph{reads} during bulk transfers while keeping useful background throughput, and it documents where it does not.
 \subsection{Testing Screenshots}
 \label{sec:testshots}
 
 \begin{figure}[H]
 \centering
 \includegraphics[width=\linewidth]{figures/screenshots/term_09_tests.png}
-\caption{\code{make test}: scheduler unit test, core persistence and concurrency test, and mounted system tests under all four policies, all passing (TC01--TC03, TC19, TC21, TC22).}
+\caption{\code{make test} at commit \code{a7e489c}: scheduler unit test, core test and mounted system tests under the four policies of that commit, all passing. The current \code{make test} adds the regression tests and runs the system test under six policies.}
 \label{fig:term-tests}
 \end{figure}
 
 \begin{figure}[H]
 \centering
 \includegraphics[width=\linewidth]{figures/screenshots/term_06_errors.png}
-\caption{Error handling at mount time: unknown policy, missing image, non-SchedFS image and negative weight (TC16, TC17).}
+\caption{Error handling at mount time: unknown policy, missing image, non-SchedFS image and negative weight (TC27, TC28; commit \code{a7e489c}, whose usage text lists four policies).}
 \label{fig:term-errors}
 \end{figure}
 
 \begin{figure}[H]
 \centering
 \includegraphics[width=\linewidth]{figures/screenshots/term_11_tsan.png}
-\caption{ThreadSanitizer build of the core concurrency test: no data races reported, exit status 0 (TC20).}
+\caption{ThreadSanitizer build of the core concurrency test at commit \code{a7e489c}: no data races reported, exit status 0. The current \code{make tsan} also runs the regression tests (TC35).}
 \label{fig:term-tsan}
 \end{figure}
 
 \begin{figure}[H]
 \centering
 \includegraphics[width=\linewidth]{figures/screenshots/term_10_bench.png}
-\caption{Benchmark run and its CSV output (TC24; data in \tabref{tab:bench}).}
+\caption{Benchmark run at commit \code{a7e489c}, superseded: the benchmark then used the wall clock and four policies. The current deterministic simulation is in \tabref{tab:sim}.}
 \label{fig:term-bench}
 \end{figure}
 
 \begin{figure}[H]
 \centering
 \includegraphics[width=\linewidth]{figures/screenshots/term_07_policies.png}
-\caption{The same mounted workload under each policy, three trials each (TC25; data in \tabref{tab:mounted}).}
+\caption{An earlier mounted experiment at commit \code{a7e489c} (total head movement only, four policies), superseded by the measured experiments in Section~\ref{sec:mountedres}.}
 \label{fig:term-policies}
 \end{figure}
 
 \begin{figure}[H]
 \centering
 \includegraphics[width=0.86\linewidth]{figures/screenshots/web_benchmark_chart.png}
-\caption{Benchmark view of the demo page, drawn from the repository's committed \code{benchmark.csv}.}
+\caption{Benchmark view of the demo page at commit \code{a7e489c}, drawn from the \code{benchmark.csv} committed at that time (superseded).}
 \label{fig:web-bench}
 \end{figure}
 
 \begin{figure}[H]
 \centering
 \includegraphics[width=0.9\linewidth]{figures/graphs/summary.png}
-\caption[Summary graph from the plotting script (committed CSV)]{Summary graph produced by \code{scripts/plot_results.py} from the repository's committed \code{benchmark.csv}.}
+\caption[Summary graph from the plotting script (commit a7e489c)]{Summary graph produced by \code{scripts/plot_results.py} from the \code{benchmark.csv} committed at \code{a7e489c} (superseded).}
 \label{fig:summarypng}
 \end{figure}
 
-\noindent \figref{fig:web-bench} and \figref{fig:summarypng} use the repository's committed CSV, recorded on a different machine. Their seek totals for FCFS, SSTF and SCAN equal those in \tabref{tab:bench}, while their timing values and Adaptive totals differ, as discussed under TC24.
+\noindent \figref{fig:term-bench}, \figref{fig:term-policies}, \figref{fig:web-bench} and \figref{fig:summarypng} are kept as a record of the earlier version. Their waiting times came from the wall clock, so they varied between machines and runs; the current simulation uses a simulated clock and is exactly repeatable, and the claims of this report rest on the mounted measurements in Section~\ref{sec:mountedres}.
 % =====================================================================
 \clearpage
 \section{REFERENCES}
@@ -1875,20 +2099,44 @@ The three files below form the complete path from a submitted request to the dis
 
 \section{REPRODUCING THE RESULTS}
 \label{app:repro}
-On Ubuntu 22.04 or 24.04 with \code{/dev/fuse} available, the following commands reproduce every result in this report. Run them as a normal user, not as root.
+Every result in this report was produced in the container described by \code{docker/Dockerfile} (\code{ubuntu:24.04} with the build tools, libfuse~3, Python~3 and Matplotlib, and an unprivileged user \code{student}). The commands below build the image, run the tests, and repeat the experiments. Run SchedFS as a normal user, never as root. On a native Ubuntu 22.04/24.04 machine with \code{/dev/fuse}, the same commands work without Docker after \code{sudo apt install -y build-essential pkg-config libfuse3-dev fuse3 python3 python3-matplotlib}.
 
-\begin{lstlisting}[style=shstyle,caption={Commands used to produce the results},label={lst:repro}]
-sudo apt install -y build-essential pkg-config libfuse3-dev fuse3 \
-                    python3-pandas python3-matplotlib
+\begin{lstlisting}[style=shstyle,caption={Build environment, tests and the old-defect check},label={lst:repro}]
 git clone https://github.com/Sharmaditya2k05/FUSE.git && cd FUSE
-make                                   # Figure: build
-./mkfs.schedfs disk.img 16M            # TC04
-mkdir -p mnt && ./schedfs disk.img mnt --sched=sstf
-echo 'Operating Systems' > mnt/demo.txt && cat mnt/demo.txt
+git checkout feature/deadline-scheduler
+docker build -t schedfs-dev docker
+docker run -it --rm --device /dev/fuse --cap-add SYS_ADMIN \
+  --security-opt apparmor:unconfined --security-opt seccomp=unconfined \
+  -v "$PWD:/src" -w /src schedfs-dev su student
+# inside the container:
+make                           # schedfs, mkfs.schedfs, schedfs-bench, schedfs-workload
+make unit                      # TC01-TC11, TC19-TC20, TC22, TC30-TC33
+make test                      # the same plus tests/system.sh (TC36, TC37)
+make tsan                      # core and regression tests under ThreadSanitizer (TC35)
+scripts/check_old_defects.sh   # each fixed defect fails on the original code (TC34)
+\end{lstlisting}
+
+\begin{lstlisting}[style=shstyle,caption={Simulation, tuning, evaluation matrix, host reference and tables},label={lst:repro-exp}]
+make bench && python3 scripts/plot_results.py           # simulation: benchmark.csv, results/sim_*.png
+python3 scripts/experiments.py tune   results/mounted/tuning        # read deadline (seed 101)
+python3 scripts/experiments.py tunew  results/mounted/tuning_write  # write deadline (seed 101)
+python3 scripts/experiments.py matrix results/mounted/matrix --reps 3 --duration 10 --keep-first-trace
+python3 scripts/experiments.py host   results/mounted --reps 3 --duration 10
+python3 scripts/report_results.py     results/mounted   # summary.md, summary.csv, charts
+# one run by hand, then its analysis:
+scripts/run_mounted.sh OUT "--sched=deadline --direct-io" "--duration 10 --bg 2"
+python3 scripts/analyze_run.py OUT
+\end{lstlisting}
+
+\noindent The evaluation matrix takes about 50 minutes (216 mounted runs). The raw data of every run (foreground samples, background progress, traces, \code{run.json}) is kept under \code{results/mounted/}.
+
+\begin{lstlisting}[style=shstyle,caption={The four-step live demonstration and a manual session},label={lst:repro-demo}]
+scripts/demo.sh                # 1 file operations, 2 live FCFS vs deadline, 3 repeated runs, 4 persistence
+NOPAUSE=1 scripts/demo.sh      # the same without pauses
+./mkfs.schedfs disk.img 64M && mkdir -p mnt
+./schedfs disk.img mnt --sched=deadline --trace=trace.csv
+echo 'Operating Systems' > mnt/notes.txt && cat mnt/notes.txt
 fusermount3 -u mnt && cat filesystem.log
-make test                              # TC01-TC03, TC19, TC21, TC22
-./schedfs-bench --all                  # TC24, writes benchmark.csv
-python3 scripts/plot_results.py        # graphs in results/
 \end{lstlisting}
 
 \end{document}
