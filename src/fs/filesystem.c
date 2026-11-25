@@ -36,17 +36,27 @@ static int block_write(sfs_t *fs, uint32_t b, const void *p) {
     return vdisk_write(&fs->disk, b, p);
 }
 
+/*
+ * Metadata write-back. The snapshot is taken and written while holding the *_io_lock,
+ * so writes of the same metadata block are queued in snapshot order. Without it, two
+ * threads could snapshot {A} and {A,B}, and the scheduler could serve the {A,B} write
+ * first, leaving the older {A} on disk (it would only be repaired at unmount).
+ */
 static int sync_sb(sfs_t *fs) {
     uint8_t block[SFS_BLOCK_SIZE] = {0};
+    pthread_mutex_lock(&fs->super_io_lock);
     pthread_mutex_lock(&fs->super_lock);
     memcpy(block, &fs->sb, sizeof(fs->sb));
     pthread_mutex_unlock(&fs->super_lock);
-    return block_write(fs, 0, block);
+    int rc = block_write(fs, 0, block);
+    pthread_mutex_unlock(&fs->super_io_lock);
+    return rc;
 }
 
 static int sync_bitmap(sfs_t *fs) {
     int rc = 0;
     uint8_t block[SFS_BLOCK_SIZE];
+    pthread_mutex_lock(&fs->bitmap_io_lock);
     for (uint32_t i = 0; i < fs->sb.bitmap_blocks && !rc; ++i) {
         /* Snapshot under the lock so the dispatcher never reads a bitmap being modified. */
         pthread_mutex_lock(&fs->bitmap_lock);
@@ -54,6 +64,7 @@ static int sync_bitmap(sfs_t *fs) {
         pthread_mutex_unlock(&fs->bitmap_lock);
         rc = block_write(fs, fs->sb.bitmap_start + i, block);
     }
+    pthread_mutex_unlock(&fs->bitmap_io_lock);
     return rc;
 }
 
@@ -416,8 +427,7 @@ static int free_inode_blocks(sfs_t *fs, uint32_t ino, sfs_inode_t *n, uint32_t f
     return rc;
 }
 
-int sfs_mount_image(sfs_t *fs, const char *path, sched_policy_t policy, double alpha, double beta,
-                    bool verbose) {
+int sfs_mount_image(sfs_t *fs, const char *path, const vdisk_options_t *opts, bool verbose) {
     memset(fs, 0, sizeof(*fs));
     int fd = open(path, O_RDONLY | O_CLOEXEC);
     if (fd < 0)
@@ -433,15 +443,23 @@ int sfs_mount_image(sfs_t *fs, const char *path, sched_policy_t policy, double a
         return -EINVAL;
     if (fs->sb.total_inodes > SFS_DEFAULT_INODES || fs->sb.data_start >= fs->sb.total_blocks)
         return -EINVAL;
+    pthread_rwlock_init(&fs->ns_lock, NULL);
     pthread_mutex_init(&fs->bitmap_lock, NULL);
     pthread_mutex_init(&fs->super_lock, NULL);
+    pthread_mutex_init(&fs->bitmap_io_lock, NULL);
+    pthread_mutex_init(&fs->super_io_lock, NULL);
     pthread_mutex_init(&fs->inode_alloc_lock, NULL);
     pthread_mutex_init(&fs->inode_table_lock, NULL);
     for (uint32_t i = 0; i <= fs->sb.total_inodes; ++i) {
         pthread_rwlock_init(&fs->inode_locks[i], NULL);
         pthread_mutex_init(&fs->dir_locks[i], NULL);
     }
-    int rc = vdisk_open(&fs->disk, path, fs->sb.total_blocks, policy, alpha, beta, 128);
+    vdisk_options_t defaults;
+    if (!opts) {
+        vdisk_default_options(&defaults);
+        opts = &defaults;
+    }
+    int rc = vdisk_open(&fs->disk, path, fs->sb.total_blocks, opts);
     if (rc)
         return rc;
     fs->bitmap = calloc(fs->sb.bitmap_blocks, SFS_BLOCK_SIZE);
@@ -453,7 +471,7 @@ int sfs_mount_image(sfs_t *fs, const char *path, sched_policy_t policy, double a
         rc = block_read(fs, fs->sb.bitmap_start + i, fs->bitmap + (size_t)i * SFS_BLOCK_SIZE);
     fs->verbose = verbose;
     sfs_log(LOG_INFO, "mounted image: %u blocks, scheduler=%s", fs->sb.total_blocks,
-            scheduler_name(policy));
+            scheduler_name(opts->policy));
     return rc;
 }
 
@@ -463,9 +481,13 @@ void sfs_unmount_image(sfs_t *fs) {
     sync_sb(fs);
     sync_bitmap(fs);
     vdisk_close(&fs->disk);
-    sfs_log(LOG_INFO, "unmounted image: %llu requests, total seek %llu blocks",
-            (unsigned long long)fs->disk.metrics.requests,
-            (unsigned long long)fs->disk.metrics.total_seek);
+    const sfs_metrics_t *m = &fs->disk.metrics;
+    sfs_log(LOG_INFO,
+            "unmounted image: %llu requests, total seek %llu blocks, mean wait %.3f ms, "
+            "max wait %.3f ms, max queue depth %llu",
+            (unsigned long long)m->requests, (unsigned long long)m->total_seek,
+            m->requests ? m->wait_sum_ms / (double)m->requests : 0.0, m->wait_max_ms,
+            (unsigned long long)m->depth_max);
     free(fs->bitmap);
     for (uint32_t i = 0; i <= fs->sb.total_inodes; ++i) {
         pthread_rwlock_destroy(&fs->inode_locks[i]);
@@ -475,17 +497,44 @@ void sfs_unmount_image(sfs_t *fs) {
     pthread_mutex_destroy(&fs->inode_table_lock);
     pthread_mutex_destroy(&fs->bitmap_lock);
     pthread_mutex_destroy(&fs->super_lock);
+    pthread_mutex_destroy(&fs->bitmap_io_lock);
+    pthread_mutex_destroy(&fs->super_io_lock);
+    pthread_rwlock_destroy(&fs->ns_lock);
+}
+
+/*
+ * Look up `path` and lock its inode (read or write). The namespace lock is held only
+ * until the inode lock is taken: after that, unlink/rmdir cannot free the inode until
+ * this operation unlocks it, and no new lookup can find a name that is being removed.
+ */
+static int lookup_locked(sfs_t *fs, const char *path, bool write, uint32_t *ino,
+                         sfs_inode_t *n) {
+    pthread_rwlock_rdlock(&fs->ns_lock);
+    int rc = resolve(fs, path, ino);
+    if (!rc) {
+        if (write)
+            pthread_rwlock_wrlock(&fs->inode_locks[*ino]);
+        else
+            pthread_rwlock_rdlock(&fs->inode_locks[*ino]);
+    }
+    pthread_rwlock_unlock(&fs->ns_lock);
+    if (rc)
+        return rc;
+    rc = inode_read(fs, *ino, n);
+    if (!rc && !n->mode)
+        rc = -ENOENT; /* defensive: never use a released inode */
+    if (rc)
+        pthread_rwlock_unlock(&fs->inode_locks[*ino]);
+    return rc;
 }
 
 int sfs_getattr(sfs_t *fs, const char *path, struct stat *st) {
     uint32_t ino;
-    int rc = resolve(fs, path, &ino);
-    if (rc)
-        return rc;
     sfs_inode_t n;
-    rc = inode_read(fs, ino, &n);
+    int rc = lookup_locked(fs, path, false, &ino, &n);
     if (rc)
         return rc;
+    pthread_rwlock_unlock(&fs->inode_locks[ino]);
     memset(st, 0, sizeof(*st));
     st->st_ino = ino;
     st->st_mode = n.mode;
@@ -502,42 +551,46 @@ int sfs_getattr(sfs_t *fs, const char *path, struct stat *st) {
 }
 
 int sfs_create(sfs_t *fs, const char *path, mode_t mode, uint32_t *out) {
-    uint32_t parent;
+    uint32_t parent, ino = 0;
     char name[60];
+    pthread_rwlock_wrlock(&fs->ns_lock);
     int rc = parent_name(fs, path, &parent, name);
-    if (rc)
-        return rc;
-    if (!dir_find(fs, parent, name, NULL, NULL))
-        return -EEXIST;
-    uint32_t ino = 0;
-    rc = inode_alloc(fs, S_IFREG | (mode & 07777), &ino);
+    if (!rc && !dir_find(fs, parent, name, NULL, NULL))
+        rc = -EEXIST;
+    if (!rc)
+        rc = inode_alloc(fs, S_IFREG | (mode & 07777), &ino);
     if (!rc)
         rc = dir_add(fs, parent, name, ino);
     if (rc && ino)
         inode_release(fs, ino);
+    pthread_rwlock_unlock(&fs->ns_lock);
     if (!rc && out)
         *out = ino;
     return rc;
 }
 
 int sfs_mkdir(sfs_t *fs, const char *path, mode_t mode) {
-    uint32_t parent;
+    uint32_t parent, ino = 0;
     char name[60];
+    pthread_rwlock_wrlock(&fs->ns_lock);
     int rc = parent_name(fs, path, &parent, name);
-    if (rc)
-        return rc;
-    if (!dir_find(fs, parent, name, NULL, NULL))
-        return -EEXIST;
-    uint32_t ino = 0;
-    rc = inode_alloc(fs, S_IFDIR | (mode & 07777), &ino);
+    if (!rc && !dir_find(fs, parent, name, NULL, NULL))
+        rc = -EEXIST;
+    if (!rc)
+        rc = inode_alloc(fs, S_IFDIR | (mode & 07777), &ino);
     if (!rc)
         rc = dir_add(fs, ino, ".", ino);
     if (!rc)
         rc = dir_add(fs, ino, "..", parent);
     if (!rc)
         rc = dir_add(fs, parent, name, ino);
-    if (rc && ino)
+    if (rc && ino) {
+        sfs_inode_t n;
+        if (!inode_read(fs, ino, &n))
+            free_inode_blocks(fs, ino, &n, 0);
         inode_release(fs, ino);
+    }
+    pthread_rwlock_unlock(&fs->ns_lock);
     return rc;
 }
 
@@ -545,15 +598,13 @@ ssize_t sfs_read(sfs_t *fs, const char *path, void *buf, size_t size, off_t off)
     if (off < 0)
         return -EINVAL;
     uint32_t ino;
-    int rc = resolve(fs, path, &ino);
+    sfs_inode_t n;
+    int rc = lookup_locked(fs, path, false, &ino, &n);
     if (rc)
         return rc;
-    pthread_rwlock_rdlock(&fs->inode_locks[ino]);
-    sfs_inode_t n;
-    rc = inode_read(fs, ino, &n);
-    if (rc || S_ISDIR(n.mode)) {
+    if (S_ISDIR(n.mode)) {
         pthread_rwlock_unlock(&fs->inode_locks[ino]);
-        return rc ? rc : -EISDIR;
+        return -EISDIR;
     }
     if ((uint64_t)off >= n.size) {
         pthread_rwlock_unlock(&fs->inode_locks[ino]);
@@ -590,15 +641,13 @@ ssize_t sfs_write(sfs_t *fs, const char *path, const void *buf, size_t size, off
         (uint64_t)off + size > (uint64_t)(SFS_DIRECT_BLOCKS + SFS_INDIRECT_BLOCKS) * SFS_BLOCK_SIZE)
         return -EFBIG;
     uint32_t ino;
-    int rc = resolve(fs, path, &ino);
+    sfs_inode_t n;
+    int rc = lookup_locked(fs, path, true, &ino, &n);
     if (rc)
         return rc;
-    pthread_rwlock_wrlock(&fs->inode_locks[ino]);
-    sfs_inode_t n;
-    rc = inode_read(fs, ino, &n);
-    if (rc || S_ISDIR(n.mode)) {
+    if (S_ISDIR(n.mode)) {
         pthread_rwlock_unlock(&fs->inode_locks[ino]);
-        return rc ? rc : -EISDIR;
+        return -EISDIR;
     }
     size_t done = 0;
     uint8_t block[SFS_BLOCK_SIZE];
@@ -640,18 +689,37 @@ int sfs_truncate(sfs_t *fs, const char *path, off_t size) {
         (uint64_t)size > (uint64_t)(SFS_DIRECT_BLOCKS + SFS_INDIRECT_BLOCKS) * SFS_BLOCK_SIZE)
         return -EFBIG;
     uint32_t ino;
-    int rc = resolve(fs, path, &ino);
+    sfs_inode_t n;
+    int rc = lookup_locked(fs, path, true, &ino, &n);
     if (rc)
         return rc;
-    pthread_rwlock_wrlock(&fs->inode_locks[ino]);
-    sfs_inode_t n;
-    rc = inode_read(fs, ino, &n);
-    if (!rc && (uint64_t)size < n.size) {
-        uint32_t first = (uint32_t)(((uint64_t)size + SFS_BLOCK_SIZE - 1u) / SFS_BLOCK_SIZE);
+    if (S_ISDIR(n.mode)) {
+        pthread_rwlock_unlock(&fs->inode_locks[ino]);
+        return -EISDIR;
+    }
+    uint64_t keep = (uint64_t)size;
+    if (keep < n.size && keep % SFS_BLOCK_SIZE) {
+        /* Shrinking inside a block: zero the discarded tail of that block, so a later
+         * extension (truncate up, or a write past the end) reads zeros, not old bytes.
+         * Invariant: bytes of the last block beyond the file size are always zero. */
+        uint32_t p = 0;
+        rc = bmap(fs, &n, (uint32_t)(keep / SFS_BLOCK_SIZE), false, &p);
+        if (!rc && p) {
+            uint8_t block[SFS_BLOCK_SIZE];
+            rc = block_read(fs, p, block);
+            if (!rc) {
+                size_t from = (size_t)(keep % SFS_BLOCK_SIZE);
+                memset(block + from, 0, SFS_BLOCK_SIZE - from);
+                rc = block_write(fs, p, block);
+            }
+        }
+    }
+    if (!rc && keep < n.size) {
+        uint32_t first = (uint32_t)((keep + SFS_BLOCK_SIZE - 1u) / SFS_BLOCK_SIZE);
         rc = free_inode_blocks(fs, ino, &n, first);
     }
     if (!rc) {
-        n.size = (uint64_t)size;
+        n.size = keep;
         n.mtime = n.ctime = now_sec();
         rc = inode_write(fs, ino, &n);
     }
@@ -659,27 +727,36 @@ int sfs_truncate(sfs_t *fs, const char *path, off_t size) {
     return rc;
 }
 
-int sfs_unlink(sfs_t *fs, const char *path) {
-    uint32_t parent;
-    char name[60];
-    int rc = parent_name(fs, path, &parent, name);
-    if (rc)
-        return rc;
-    uint32_t ino;
-    rc = dir_find(fs, parent, name, &ino, NULL);
-    if (rc)
-        return rc;
+/* Free the blocks and the inode of a name already removed from its directory. Waits
+ * for operations that still hold the inode (they resolved it before the removal). */
+static int destroy_inode(sfs_t *fs, uint32_t ino) {
+    pthread_rwlock_wrlock(&fs->inode_locks[ino]);
     sfs_inode_t n;
-    rc = inode_read(fs, ino, &n);
-    if (!rc && S_ISDIR(n.mode))
-        return -EISDIR;
-    if (!rc)
-        rc = dir_remove(fs, parent, name, NULL);
+    int rc = inode_read(fs, ino, &n);
     if (!rc)
         rc = free_inode_blocks(fs, ino, &n, 0);
     if (!rc)
         rc = inode_release(fs, ino);
+    pthread_rwlock_unlock(&fs->inode_locks[ino]);
     return rc;
+}
+
+int sfs_unlink(sfs_t *fs, const char *path) {
+    uint32_t parent, ino = 0;
+    char name[60];
+    pthread_rwlock_wrlock(&fs->ns_lock);
+    int rc = parent_name(fs, path, &parent, name);
+    if (!rc)
+        rc = dir_find(fs, parent, name, &ino, NULL);
+    sfs_inode_t n;
+    if (!rc)
+        rc = inode_read(fs, ino, &n);
+    if (!rc && S_ISDIR(n.mode))
+        rc = -EISDIR;
+    if (!rc)
+        rc = dir_remove(fs, parent, name, NULL);
+    pthread_rwlock_unlock(&fs->ns_lock);
+    return rc ? rc : destroy_inode(fs, ino);
 }
 
 static int dir_empty(sfs_t *fs, uint32_t ino) {
@@ -706,55 +783,71 @@ static int dir_empty(sfs_t *fs, uint32_t ino) {
 }
 
 int sfs_rmdir(sfs_t *fs, const char *path) {
-    uint32_t parent;
+    uint32_t parent, ino = 0;
     char name[60];
+    pthread_rwlock_wrlock(&fs->ns_lock);
     int rc = parent_name(fs, path, &parent, name);
-    if (rc)
-        return rc;
-    uint32_t ino;
-    rc = dir_find(fs, parent, name, &ino, NULL);
-    if (rc)
-        return rc;
+    if (!rc)
+        rc = dir_find(fs, parent, name, &ino, NULL);
     sfs_inode_t n;
-    rc = inode_read(fs, ino, &n);
+    if (!rc)
+        rc = inode_read(fs, ino, &n);
     if (!rc && !S_ISDIR(n.mode))
-        return -ENOTDIR;
-    int empty = dir_empty(fs, ino);
-    if (empty <= 0)
-        return empty ? empty : -ENOTEMPTY;
-    rc = dir_remove(fs, parent, name, NULL);
+        rc = -ENOTDIR;
+    if (!rc) {
+        int empty = dir_empty(fs, ino);
+        rc = empty < 0 ? empty : (empty ? 0 : -ENOTEMPTY);
+    }
     if (!rc)
-        rc = free_inode_blocks(fs, ino, &n, 0);
-    if (!rc)
-        rc = inode_release(fs, ino);
-    return rc;
+        rc = dir_remove(fs, parent, name, NULL);
+    pthread_rwlock_unlock(&fs->ns_lock);
+    return rc ? rc : destroy_inode(fs, ino);
+}
+
+/* True if directory `dir` is `ancestor` or lies below it (walks ".." up to the root). */
+static int is_within(sfs_t *fs, uint32_t dir, uint32_t ancestor) {
+    for (int depth = 0; depth < (int)SFS_DEFAULT_INODES + 1; ++depth) {
+        if (dir == ancestor)
+            return 1;
+        if (dir == SFS_ROOT_INO)
+            return 0;
+        uint32_t up;
+        if (dir_find(fs, dir, "..", &up, NULL))
+            return 0;
+        dir = up;
+    }
+    return 0;
 }
 
 int sfs_rename(sfs_t *fs, const char *from, const char *to) {
     uint32_t fp = 0, tp = 0, ino = 0;
     char fn[60], tn[60];
     bool target_added = false;
+    pthread_rwlock_wrlock(&fs->ns_lock);
     int rc = parent_name(fs, from, &fp, fn);
     if (!rc)
         rc = parent_name(fs, to, &tp, tn);
     if (!rc)
         rc = dir_find(fs, fp, fn, &ino, NULL);
     if (!rc && !dir_find(fs, tp, tn, NULL, NULL))
-        return -EEXIST;
+        rc = -EEXIST;
+    sfs_inode_t n;
+    bool is_dir = false;
+    if (!rc && !inode_read(fs, ino, &n))
+        is_dir = S_ISDIR(n.mode);
+    if (!rc && is_dir && is_within(fs, tp, ino))
+        rc = -EINVAL; /* a directory cannot be moved into itself or its own subtree */
     if (!rc) {
         rc = dir_add(fs, tp, tn, ino);
         target_added = !rc;
     }
-    if (!rc && fp != tp) {
-        sfs_inode_t n;
-        if (!inode_read(fs, ino, &n) && S_ISDIR(n.mode)) {
-            uint32_t old_parent = 0;
-            rc = dir_remove(fs, ino, "..", &old_parent);
-            if (!rc)
-                rc = dir_add(fs, ino, "..", tp);
-            if (rc && old_parent)
-                dir_add(fs, ino, "..", old_parent);
-        }
+    if (!rc && fp != tp && is_dir) {
+        uint32_t old_parent = 0;
+        rc = dir_remove(fs, ino, "..", &old_parent);
+        if (!rc)
+            rc = dir_add(fs, ino, "..", tp);
+        if (rc && old_parent)
+            dir_add(fs, ino, "..", old_parent);
     }
     if (!rc) {
         rc = dir_remove(fs, fp, fn, NULL);
@@ -762,42 +855,43 @@ int sfs_rename(sfs_t *fs, const char *from, const char *to) {
             dir_remove(fs, tp, tn, NULL);
     } else if (target_added)
         dir_remove(fs, tp, tn, NULL);
+    pthread_rwlock_unlock(&fs->ns_lock);
     return rc;
 }
 
 int sfs_statfs(sfs_t *fs, struct statvfs *st) {
     memset(st, 0, sizeof(*st));
     st->f_bsize = st->f_frsize = SFS_BLOCK_SIZE;
+    pthread_mutex_lock(&fs->super_lock);
     st->f_blocks = fs->sb.total_blocks - fs->sb.data_start;
     st->f_bfree = st->f_bavail = fs->sb.free_blocks;
     st->f_files = fs->sb.total_inodes;
     st->f_ffree = st->f_favail = fs->sb.free_inodes;
+    pthread_mutex_unlock(&fs->super_lock);
     st->f_namemax = SFS_NAME_MAX;
     return 0;
 }
 
 int sfs_readdir(sfs_t *fs, const char *path, sfs_dir_cb cb, void *arg) {
     uint32_t ino;
+    /* Hold the namespace lock for reading during the listing, so entries are not
+     * added or removed while they are being read. */
+    pthread_rwlock_rdlock(&fs->ns_lock);
     int rc = resolve(fs, path, &ino);
-    if (rc)
-        return rc;
     sfs_inode_t n;
-    rc = inode_read(fs, ino, &n);
-    if (rc)
-        return rc;
-    if (!S_ISDIR(n.mode))
-        return -ENOTDIR;
-    for (uint64_t off = 0; off < n.size; off += sizeof(sfs_dirent_t)) {
+    if (!rc)
+        rc = inode_read(fs, ino, &n);
+    if (!rc && !S_ISDIR(n.mode))
+        rc = -ENOTDIR;
+    for (uint64_t off = 0; !rc && off < n.size; off += sizeof(sfs_dirent_t)) {
         uint32_t p;
-        rc = bmap(fs, &n, (uint32_t)(off / SFS_BLOCK_SIZE), false, &p);
         uint8_t b[SFS_BLOCK_SIZE];
-        if (rc)
-            return rc;
-        if (!p)
+        rc = bmap(fs, &n, (uint32_t)(off / SFS_BLOCK_SIZE), false, &p);
+        if (rc || !p)
             continue;
         rc = block_read(fs, p, b);
         if (rc)
-            return rc;
+            break;
         sfs_dirent_t *e = (sfs_dirent_t *)(b + off % SFS_BLOCK_SIZE);
         if (e->ino) {
             struct stat st;
@@ -810,5 +904,6 @@ int sfs_readdir(sfs_t *fs, const char *path, sfs_dir_cb cb, void *arg) {
                 break;
         }
     }
-    return 0;
+    pthread_rwlock_unlock(&fs->ns_lock);
+    return rc;
 }

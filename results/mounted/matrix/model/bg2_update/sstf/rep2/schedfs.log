@@ -1,0 +1,4 @@
+2026-11-25T16:27:17.273 [INFO] mounted image: 16384 blocks, scheduler=sstf
+2026-11-25T16:27:17.275 [INFO] unmounted image: 3 requests, total seek 3 blocks, mean wait 0.018 ms, max wait 0.020 ms, max queue depth 1
+2026-11-25T16:27:17.277 [INFO] mounted image: 16384 blocks, scheduler=sstf
+2026-11-25T16:27:29.761 [INFO] unmounted image: 47875 requests, total seek 13142127 blocks, mean wait 0.365 ms, max wait 24.229 ms, max queue depth 3

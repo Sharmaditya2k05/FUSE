@@ -1,0 +1,91 @@
+{
+ "dir": "results/mounted/matrix/model/light/sstf/rep1",
+ "workload": {
+  "dir": "/tmp/tmp.W4DIwIXjwp/mnt",
+  "duration_s": 10.0,
+  "warmup_s": 1.0,
+  "bg": 0,
+  "bg_file_kb": 2048,
+  "bg_chunk_kb": 128,
+  "fg_interval_ms": 20.0,
+  "fg_file_kb": 64,
+  "fg_io_kb": 4,
+  "fg_op": "read",
+  "bg_mode": "write",
+  "seed": 1002,
+  "t0_monotonic_ns": 7419368173830
+ },
+ "fg_latency_ms": {
+  "n": 500,
+  "mean": 2.461482164,
+  "p50": 2.394664,
+  "p95": 2.956615,
+  "p99": 3.373446,
+  "max": 3.865941
+ },
+ "fg_errors": 0,
+ "bg_mb_per_s": 0.0,
+ "run": {
+  "schedfs_options": "--sched=sstf --direct-io --model-base-us=100 --model-us-per-block=0.25",
+  "workload_options": "--warmup 1 --fg-interval-ms 20 --fg-file-kb 64 --fg-io-kb 4 --bg-file-kb 2048 --bg-chunk-kb 128 --duration 10.0 --bg 0 --fg-op read --seed 1002",
+  "image_size": "64M",
+  "kernel": "6.18.58.1-microsoft-standard-WSL2",
+  "cpus": 20,
+  "date": "2026-11-25T16:22:23Z",
+  "commit": "unknown"
+ },
+ "schedfs": {
+  "policy": "sstf",
+  "read_deadline_ms": "0.000",
+  "write_deadline_ms": "2.000",
+  "model_base_us": "100.000",
+  "model_us_per_block": "0.2500",
+  "direct_io": "1",
+  "queue_capacity": "128"
+ },
+ "block": {
+  "requests": 5766,
+  "requests_per_s": 576.6,
+  "modeled_movement_blocks": 33057,
+  "wait_ms": {
+   "fg": {
+    "n": 5766,
+    "mean": 0.015892796566077005,
+    "p50": 0.013329,
+    "p95": 0.028534,
+    "p99": 0.044844,
+    "max": 0.818584
+   }
+  },
+  "service_ms": {
+   "n": 5766,
+   "mean": 0.16438866961498438,
+   "p50": 0.160893,
+   "p95": 0.17707,
+   "p99": 0.226808,
+   "max": 0.483793
+  },
+  "queue_depth": {
+   "mean": 1.0,
+   "max": 1,
+   "share_picked_with_2plus": 0.0
+  },
+  "fg_requests_finding_bg_waiting": 0.0,
+  "fg_requests_per_op": {
+   "n": 500,
+   "mean": 11.532,
+   "p50": 11,
+   "p95": 14,
+   "p99": 16,
+   "max": 19
+  },
+  "fg_op_share_in_block_layer": {
+   "n": 500,
+   "mean": 0.844634282795321,
+   "p50": 0.8459462519000391,
+   "p95": 0.8644611035256188,
+   "p99": 0.8706601093174666,
+   "max": 0.8839078831203563
+  }
+ }
+}

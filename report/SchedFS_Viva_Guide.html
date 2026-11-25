@@ -133,37 +133,38 @@
   SchedFS
 </div>
 <h1>Everything you need to<br>explain SchedFS in your viva</h1>
-<p class="lede">A plain-language walkthrough of what the project does, how one write travels from your program to the disk and back, the technology behind each step, and the questions examiners are likely to ask.</p>
+<p class="lede">A plain-language walkthrough of what the project does, how one request travels from your program to the disk and back, why the deadline policy keeps small file operations responsive, what was measured and what was modeled, and the questions examiners are likely to ask.</p>
 <div class="chips">
   <span class="chip">Operating Systems Lab <b>24B11CS312</b></span>
   <span class="chip">C11 (gnu11) · <b>libfuse 3</b> · pthreads</span>
-  <span class="chip">Policies <span class="mono">FCFS · SSTF · SCAN · Adaptive</span></span>
-  <span class="chip"><b>25</b> test cases, all passing</span>
+  <span class="chip">Policies <span class="mono">FCFS · SSTF · SCAN · LOOK · Adaptive · Deadline</span></span>
+  <span class="chip"><b>40</b> test cases: 39 pass, 1 goal not met</span>
 </div>
 
 <h2><span class="n">01</span>The 1-minute pitch</h2>
 <p class="sub">Memorise this. It is your opening answer to "Tell us about your project".</p>
 <div class="say">
   <div class="label">Say this</div>
-  <p>SchedFS is a real file system for Linux that we wrote in C. You mount it like a pen drive and use normal commands such as mkdir, cp and cat inside it. The "disk" is one 16 MiB file, split into 4,096 blocks of 4 KB. What makes it special is that every block it reads or writes first goes into a waiting queue, and a scheduler decides which request the disk serves next, using FCFS, SSTF, SCAN or our own Adaptive policy that balances distance and waiting time. One dispatcher thread does all the disk I/O, like a single disk arm. So three textbook topics, file systems, disk scheduling and thread synchronization, run together on real traffic. On a real mounted workload of 4,927 requests, SSTF cut head movement by 40% compared with FCFS. It is built with libfuse 3 and POSIX threads, and is checked by 25 test cases and ThreadSanitizer.</p>
+  <p>SchedFS is a responsiveness-focused file system with deadline-aware request scheduling. Our aim was to build a mountable Linux file system that keeps everyday file operations responsive during competing bulk transfers by scheduling storage requests with deadlines, while keeping useful throughput for background work. It is written in C on FUSE: you mount it and use mkdir, cp and cat as usual. Every block it reads or writes waits in one queue, and one dispatcher thread serves the queue in the order a policy chooses. Our deadline policy serves reads at once, oldest first, and lets writes be ordered by locality for at most 2 ms. On one Windows + WSL 2 machine, small reads during background writes had a 22 to 56% lower 99th-percentile latency than under our own FCFS policy, with background throughput within −13% to +8% of FCFS. The cost: SSTF keeps more throughput when seek time is modeled, and small foreground updates with real I/O got 24% slower.</p>
 </div>
-<div class="key"><span class="k">Key idea</span><span>If you remember one sentence: <em>every block waits its turn in one queue, and the scheduler decides the turn.</em> And: <em>same requests, different order, different head movement.</em></span></div>
+<div class="key"><span class="k">Key idea</span><span>If you remember one sentence: <em>every block waits in one queue; reads become urgent at once, writes after 2 ms, and urgent requests go first.</em> And: <em>we compare policies inside SchedFS on identical workloads, not SchedFS against the kernel.</em></span></div>
 
 <!-- ======================= 02 ======================= -->
 <h2><span class="n">02</span>The problem and our idea</h2>
-<h3>What is wrong today</h3>
+<h3>The problem</h3>
 <ul class="dots">
-  <li><b>Taught in separate boxes:</b> textbooks teach file systems, disk scheduling and synchronization as three separate chapters, so students never see them working together.</li>
-  <li><b>Scheduling stays on paper:</b> disk-scheduling problems are solved by hand on a list of numbers like 98, 183, 37. Nobody sees the policy run on real file traffic.</li>
-  <li><b>The kernel hides it:</b> a real Linux file system lives inside the kernel, where its queue and scheduler are hard to see, change or measure.</li>
-  <li><b>Kernel code is risky:</b> a bug in a kernel module can crash the whole computer, which makes it a poor place to experiment.</li>
+  <li><b>Bulk transfers and small operations share one disk:</b> while a backup, an import or a large copy runs, you still want to open a config file or save your notes without a long pause.</li>
+  <li><b>Arrival order makes small reads wait:</b> under FCFS a small read queues behind every background write that arrived first.</li>
+  <li><b>Locality alone can starve:</b> SSTF always serves the nearest block, so a distant small read can be overtaken again and again by nearby background writes.</li>
+  <li><b>A small operation is a chain:</b> one open + 4 KB read + close needed about 11 block requests in our experiments (path lookup, inode, data), so every wait is paid many times.</li>
 </ul>
 <h3>Our solution in three parts</h3>
 <ul class="dots">
   <li><b>A real file system in user space</b> using FUSE: folders, files, reading, writing, renaming and deleting all work with ordinary Linux commands.</li>
-  <li><b>A visible scheduling layer:</b> every block request goes through a bounded queue, and a pluggable scheduler (FCFS, SSTF, SCAN or Adaptive) chooses the order. You pick the policy when you mount.</li>
-  <li><b>Measurement built in:</b> the dispatcher counts requests, head movement and waiting time, and a benchmark replays fixed traces under every policy so they can be compared fairly.</li>
+  <li><b>Deadline-aware scheduling in the request path:</b> every block request goes through a bounded queue, and a policy chosen at mount time orders it. The deadline policy gives each request a service-start deadline and serves overdue requests first, otherwise the nearest block.</li>
+  <li><b>Honest measurement:</b> a per-request trace, a workload generator and repeated mounted experiments (3 runs × 10 s per cell), kept separate from a deterministic simulation. Modeled movement is never presented as a speed-up.</li>
 </ul>
+<div class="key"><span class="k">Be precise</span><span>Deadline scheduling is an established idea (the Linux deadline I/O scheduler also gives reads and writes separate expiry times). Our contribution is implementing it, with the textbook policies, in a working file system's request path, and evaluating it on mounted workloads.</span></div>
 
 <!-- ======================= 03 ======================= -->
 <h2><span class="n">03</span>What you can do with it</h2>
@@ -175,27 +176,27 @@
     <tr><td><code>echo &gt;</code>, <code>cp</code></td><td>Creates a file and writes its bytes, taking free blocks from the bitmap as the file grows.</td><td><code>create</code>, <code>write</code></td></tr>
     <tr><td><code>cat</code>, <code>cmp</code></td><td>Reads a file block by block; a never-written block (a hole) reads as zeros.</td><td><code>open</code>, <code>read</code></td></tr>
     <tr><td><code>ls -l</code>, <code>stat</code></td><td>Lists a folder and shows each file's type, size and times from its inode.</td><td><code>readdir</code>, <code>getattr</code></td></tr>
-    <tr><td><code>truncate</code></td><td>Grows a file without writing data (sparse) or shrinks it and frees the blocks.</td><td><code>truncate</code></td></tr>
-    <tr><td><code>mv</code>, <code>rm</code></td><td>Renames or moves an entry; deletes a file and frees its inode and blocks.</td><td><code>rename</code>, <code>unlink</code></td></tr>
+    <tr><td><code>truncate</code></td><td>Grows a file without writing data (sparse) or shrinks it, zeroing the cut-off part of the last block and freeing whole blocks.</td><td><code>truncate</code></td></tr>
+    <tr><td><code>mv</code>, <code>rm</code></td><td>Renames or moves an entry (a folder cannot move into itself); deletes a file and frees its inode and blocks.</td><td><code>rename</code>, <code>unlink</code></td></tr>
     <tr><td><code>df</code>, <code>sync</code></td><td>Reports free space from the superblock; flushes to the image.</td><td><code>statfs</code>, <code>fsync</code></td></tr>
   </tbody>
 </table>
-<p>You choose the scheduling policy when you mount: <code>./schedfs disk.img mnt --sched=sstf</code>. The other choices are <code>fcfs</code>, <code>scan</code> and <code>adaptive</code> (with <code>--alpha</code> and <code>--beta</code>).</p>
+<p>You choose the policy when you mount: <code>./schedfs disk.img mnt --sched=deadline</code>. The others are <code>fcfs</code>, <code>sstf</code>, <code>scan</code>, <code>look</code> and <code>adaptive</code>. Useful options: <code>--read-deadline-ms</code> and <code>--write-deadline-ms</code> (defaults 0 and 2), <code>--direct-io</code>, <code>--model-base-us</code> and <code>--model-us-per-block</code>, <code>--queue</code>, <code>--trace=FILE</code>.</p>
 
 <!-- ======================= 04 ======================= -->
 <h2><span class="n">04</span>The full flow, step by step</h2>
-<p class="sub">Follow one real example from our demo: you type <code>echo 'Operating Systems' &gt; mnt/project/demo.txt</code>.</p>
+<p class="sub">Follow one small read while two background writers are copying large files: <code>cat mnt/notes/today.txt</code>.</p>
 <ol class="steps">
-  <li><div><span class="st">Your program calls write()</span><span class="tag">Program</span><p>The shell opens <code>demo.txt</code> inside the mounted folder and calls the <code>write()</code> system call with 18 bytes.</p></div></li>
-  <li><div><span class="st">The kernel hands it to FUSE</span><span class="tag">Kernel</span><p>Linux's virtual file system sees that the folder is a FUSE mount, so it passes the request through <code>/dev/fuse</code> to our running <code>schedfs</code> program.</p></div></li>
-  <li><div><span class="st">The FUSE adapter receives it</span><span class="tag">M2</span><p><code>op_write</code> in <code>fuse_main.c</code> calls the file-system function <code>sfs_write</code>. A pool of FUSE threads can do this for many programs at once.</p></div></li>
-  <li><div><span class="st">The file system finds the block</span><span class="tag">M3 · M4</span><p>It looks up the path, takes the file's <b>writer lock</b>, and asks <code>bmap</code> which disk block holds byte 0. The file is new, so it takes a free block from the bitmap, preferring the block right after the file's previous one.</p></div></li>
-  <li class="hot"><div><span class="st">A request joins the queue</span><span class="tag">M5</span><p>The work becomes a <b>request</b>: read or write, block number, buffer, arrival time. It goes into the bounded queue (at most 128). The calling thread then <b>sleeps</b> on its own "done" condition variable.</p></div></li>
-  <li class="hot"><div><span class="st">The scheduler picks the next request</span><span class="tag">M6</span><p>The dispatcher wakes up and asks <code>scheduler_pick</code> which waiting request to serve. FCFS takes the oldest, SSTF the nearest, SCAN the nearest in the current direction, Adaptive the lowest score.</p></div></li>
-  <li><div><span class="st">The dispatcher does the real I/O</span><span class="tag">M7</span><p>The single dispatcher thread calls <code>pwrite</code> on <code>disk.img</code> at <i>block × 4096</i>, records the seek distance and waiting time, and moves the head to the new block.</p></div></li>
-  <li><div><span class="st">The caller wakes and the answer goes back</span><span class="tag">M7 → Program</span><p>The dispatcher sets <code>completed</code> and signals the request's condition variable. The sleeping thread wakes, the reply travels back through FUSE and the kernel, and <code>write()</code> returns 18.</p></div></li>
+  <li><div><span class="st">Your program calls read()</span><span class="tag">Program</span><p><code>cat</code> opens the file inside the mounted folder and calls the <code>read()</code> system call.</p></div></li>
+  <li><div><span class="st">The kernel hands it to FUSE</span><span class="tag">Kernel</span><p>Linux's virtual file system sees a FUSE mount and passes the call through <code>/dev/fuse</code> to our running <code>schedfs</code> program.</p></div></li>
+  <li><div><span class="st">The FUSE adapter receives it</span><span class="tag">M2</span><p><code>op_read</code> in <code>fuse_main.c</code> records the calling process (for the trace only) and calls <code>sfs_read</code>. Several FUSE threads do this for many programs at once.</p></div></li>
+  <li><div><span class="st">The file system finds the block</span><span class="tag">M3 · M4</span><p><code>lookup_locked</code> holds the namespace lock while it resolves the path, takes the file's <b>reader lock</b>, and only then lets go of the namespace lock. <code>bmap</code> says which disk block holds the bytes.</p></div></li>
+  <li class="hot"><div><span class="st">A request joins the queue</span><span class="tag">M5</span><p>The work becomes a <b>request</b>: read or write, block number, buffer, arrival time. It goes into the bounded queue (at most 128) next to the background writers' requests. The thread then <b>sleeps</b> on its own "done" condition variable.</p></div></li>
+  <li class="hot"><div><span class="st">The scheduler applies the deadline rule</span><span class="tag">M6</span><p>The dispatcher asks <code>scheduler_pick</code>. A read's deadline is arrival + 0 ms, so it is overdue at once; if it has the <b>earliest deadline</b> among overdue requests, it is served next. If nothing is overdue, the <b>nearest block</b> is served.</p></div></li>
+  <li><div><span class="st">The dispatcher does the real I/O</span><span class="tag">M7</span><p>The one dispatcher thread moves the head with <code>scheduler_advance</code>, calls <code>pread</code> on <code>disk.img</code> (with <code>O_DIRECT</code> in the experiments), waits out the modeled service time if one is set, and records wait, movement and queue depth.</p></div></li>
+  <li><div><span class="st">The caller wakes and the answer goes back</span><span class="tag">M7 → Program</span><p>The dispatcher sets <code>completed</code> and signals. The thread wakes, unlocks the file, and the data travels back through FUSE. The other block requests of the same <code>cat</code> make the same trip.</p></div></li>
 </ol>
-<p>One file operation can make several block requests (inode, bitmap, superblock, data block), and each one takes this same trip through the queue.</p>
+<p>While the thread sleeps it still holds the file's lock (and, for create, rename or unlink, the namespace lock). That is safe because the dispatcher never needs those locks: it takes only the queue mutex and the request's own mutex.</p>
 
 <div class="figure">
   <h4>Mounting SchedFS</h4>
@@ -217,8 +218,8 @@
       <path d="M190 92V120" marker-end="url(#a1)"/>
     </g>
     <g font-family="Inter, Segoe UI, sans-serif" font-size="9.6" fill="#211f1e" text-anchor="middle">
-      <text x="60" y="57">./schedfs disk.img</text><text x="60" y="70">mnt --sched=sstf</text>
-      <text x="190" y="57">Image</text><text x="190" y="70">valid?</text>
+      <text x="60" y="57">./schedfs disk.img mnt</text><text x="60" y="70">--sched=deadline</text>
+      <text x="190" y="57">Options and</text><text x="190" y="70">image valid?</text>
       <text x="314" y="57">FUSE forks into</text><text x="314" y="70">the background</text>
       <text x="448" y="57">op_init: read bitmap,</text><text x="448" y="70">start the dispatcher</text>
       <text x="582" y="57">Mounted, ready</text><text x="582" y="70">for file I/O</text>
@@ -241,6 +242,7 @@
       <rect x="132" y="6" width="116" height="38" rx="6"/>
       <rect x="262" y="76" width="108" height="40" rx="6"/>
       <rect x="390" y="76" width="120" height="40" rx="6"/>
+      <rect x="530" y="76" width="104" height="40" rx="6"/>
       <rect x="390" y="160" width="120" height="40" rx="6"/>
       <rect x="226" y="160" width="144" height="40" rx="6"/>
     </g>
@@ -250,6 +252,7 @@
       <path d="M190 64V44" marker-end="url(#a2)"/>
       <path d="M240 96H262" marker-end="url(#a2)"/>
       <path d="M370 96H390" marker-end="url(#a2)"/>
+      <path d="M510 96H530" marker-end="url(#a2)"/>
       <path d="M450 116V160" marker-end="url(#a2)"/>
       <path d="M390 180H370" marker-end="url(#a2)"/>
     </g>
@@ -258,9 +261,10 @@
       <text x="190" y="93">Queue full</text><text x="190" y="106">(128)?</text>
       <text x="190" y="22">Sleep on not_full</text><text x="190" y="35">until space frees</text>
       <text x="316" y="93">Added; dispatcher</text><text x="316" y="106">woken (not_empty)</text>
-      <text x="450" y="93">Scheduler picks</text><text x="450" y="106">the next request</text>
+      <text x="450" y="93">Any overdue? Earliest</text><text x="450" y="106">deadline, else nearest</text>
+      <text x="582" y="87">read: arrival + 0 ms</text><text x="582" y="100">write: arrival + 2 ms</text><text x="582" y="113">(deadline policy)</text>
       <text x="450" y="177">pread / pwrite</text><text x="450" y="190">on disk.img</text>
-      <text x="298" y="177">Head moved, metrics</text><text x="298" y="190">saved, caller woken</text>
+      <text x="298" y="177">Head moved, metrics</text><text x="298" y="190">and trace, caller woken</text>
     </g>
     <g font-family="Inter, Segoe UI, sans-serif" font-size="8.6" fill="#5e5955">
       <text x="196" y="58">Yes</text>
@@ -271,9 +275,10 @@
 
 <h3>The states, in one line each</h3>
 <ul class="dots">
-  <li><b>A request:</b> Created → Queued → Picked by the scheduler → In service (<code>pread</code>/<code>pwrite</code>) → Completed, and the caller is woken. It lives on the caller's stack, so nothing is allocated per I/O.</li>
+  <li><b>A request:</b> Created → Queued → becomes overdue at its deadline (deadline policy) → Picked → In service (<code>pread</code>/<code>pwrite</code>) → Completed, and the caller is woken. It lives on the caller's stack, so nothing is allocated per I/O.</li>
   <li><b>A block:</b> Free (bitmap bit 0) → Allocated (bit 1, zero-filled) → Free again when its file is deleted or truncated.</li>
-  <li><b>The mount:</b> Formatted by <code>mkfs.schedfs</code> → Mounted (validated, then the daemon starts the dispatcher) → Unmounted, with "requests served and total seek" written to <code>filesystem.log</code>.</li>
+  <li><b>An inode:</b> Allocated → in use (operations hold its lock) → name removed under the namespace lock → freed only under its write lock, so nobody still using it sees it reused.</li>
+  <li><b>The mount:</b> Formatted by <code>mkfs.schedfs</code> → Mounted (validated, then the daemon starts the dispatcher) → Unmounted, with requests, movement, mean and maximum wait and maximum queue depth written to <code>filesystem.log</code>.</li>
 </ul>
 
 <!-- ======================= 05 ======================= -->
@@ -282,12 +287,12 @@
 <div class="cards">
   <div class="card"><div class="label">Language</div><div class="t">C (gnu11)</div><p>The language of operating systems. It gives direct control over bytes, structs and threads, so the on-disk format is exact: a 128-byte inode is checked at compile time.</p></div>
   <div class="card"><div class="label">File-system interface</div><div class="t">libfuse 3</div><p>Lets an ordinary program act as a file system. The kernel forwards each system call on the mount to our callbacks, so a bug cannot crash the computer.</p></div>
-  <div class="card"><div class="label">Concurrency</div><div class="t">POSIX threads</div><p>Mutexes, condition variables and reader-writer locks for the queue, the bitmap, the inode table and each file. FUSE runs requests on several threads.</p></div>
-  <div class="card"><div class="label">Disk I/O</div><div class="t">pread, pwrite, fsync</div><p>Read or write exactly one 4 KB block at an offset, without moving a shared file position, so only the dispatcher touches the image.</p></div>
-  <div class="card"><div class="label">Build</div><div class="t">GCC and Make</div><p>One <code>make</code> builds three programs: <code>schedfs</code>, <code>mkfs.schedfs</code> and <code>schedfs-bench</code>. Strict warnings are on (<code>-Wall -Wextra -Wpedantic -Wconversion</code>).</p></div>
-  <div class="card"><div class="label">Checking</div><div class="t">ThreadSanitizer</div><p>A compiler tool that watches every memory access at run time and reports two threads touching the same data without a lock. It found one race, which we fixed.</p></div>
-  <div class="card"><div class="label">Graphs</div><div class="t">Python, pandas, matplotlib</div><p><code>generate_workload.py</code> makes traces and <code>plot_results.py</code> turns <code>benchmark.csv</code> into comparison charts.</p></div>
-  <div class="card"><div class="label">Tools</div><div class="t">Docker, Git, GitHub Pages</div><p>Docker runs Ubuntu 24.04 with <code>/dev/fuse</code> on a Windows laptop. GitHub hosts the code and an interactive scheduler demo page.</p></div>
+  <div class="card"><div class="label">Concurrency</div><div class="t">POSIX threads</div><p>Mutexes, condition variables and reader-writer locks for the namespace, each file, the queue, the bitmap and the inode table. FUSE runs requests on several threads.</p></div>
+  <div class="card"><div class="label">Disk I/O</div><div class="t">pread, pwrite, O_DIRECT</div><p>Read or write exactly one 4 KB block at an offset. With <code>--direct-io</code> the host page cache is bypassed, so requests really reach the (virtual) disk and overlap in the queue.</p></div>
+  <div class="card"><div class="label">Build</div><div class="t">GCC and Make</div><p><code>make</code> builds four programs: <code>schedfs</code>, <code>mkfs.schedfs</code>, <code>schedfs-bench</code> (simulation) and <code>schedfs-workload</code>. <code>make unit</code>, <code>make test</code> and <code>make tsan</code> run the tests.</p></div>
+  <div class="card"><div class="label">Checking</div><div class="t">ThreadSanitizer</div><p>A compiler tool that reports two threads touching the same data without a lock. <code>make tsan</code> runs the core and regression tests under it; clean in repeated runs.</p></div>
+  <div class="card"><div class="label">Experiments</div><div class="t">Python, matplotlib</div><p><code>experiments.py</code> runs the tuning and evaluation matrices, <code>analyze_run.py</code> computes percentiles, <code>report_results.py</code> writes <code>summary.md</code> and the charts.</p></div>
+  <div class="card"><div class="label">Tools</div><div class="t">Docker on WSL 2, Git</div><p><code>docker/Dockerfile</code> gives Ubuntu 24.04 with <code>/dev/fuse</code> on a Windows laptop; every test and measurement ran there as a normal user.</p></div>
 </div>
 
 <div style="break-inside: avoid; page-break-inside: avoid;">
@@ -297,43 +302,43 @@
   <li><b>The kernel and FUSE</b> = the front door: every customer (system call) comes in here and is sent to our restaurant.</li>
   <li><b>FUSE threads</b> = the waiters: several take orders at the same time and pin each order (a request) on the rail.</li>
   <li><b>The bounded queue</b> = the order rail: it holds at most 128 tickets. When it is full, waiters wait.</li>
-  <li><b>The scheduler</b> = the head chef's rule for which ticket to cook next: oldest first, nearest first, or sweep along the rail.</li>
+  <li><b>The deadline policy</b> = the chef's rule: a ticket for a quick order (a read) is urgent at once; a big order (a write) becomes urgent after 2 minutes. Urgent tickets first, oldest urgent first; otherwise cook whatever is closest at hand.</li>
   <li><b>The dispatcher</b> = the one chef who cooks (does the disk I/O), then rings the bell for that ticket's waiter.</li>
 </ul>
-<p>The rules live in clear places: <code>scheduler.c</code> chooses, <code>virtual_disk.c</code> serves, and <code>request_queue.c</code> holds the waiting line.</p>
 </div>
 
 <!-- ======================= 06 ======================= -->
 <h2><span class="n">06</span>How the code is organised</h2>
-<p class="sub">Ten modules, each with one job. 2,103 lines of real code (blank lines and comments not counted).</p>
+<p class="sub">Ten modules, each with one job. 4,205 lines of real code (blank lines and comments not counted, from <code>report/tools/count_loc.py</code>).</p>
 <table>
   <thead><tr><th style="width:24%">Module</th><th>Job, in plain words</th><th style="width:28%">Main file</th><th class="num" style="width:8%">LOC</th></tr></thead>
   <tbody>
     <tr><td>M1 Image formatter</td><td>Makes a fresh disk: superblock, bitmap, inode table, root folder.</td><td><code>mkfs/mkfs.c</code></td><td class="num">180</td></tr>
-    <tr><td>M2 FUSE adapter</td><td>Receives each Linux call and calls the right file-system function; starts the dispatcher after daemonizing.</td><td><code>src/fuse/fuse_main.c</code></td><td class="num">199</td></tr>
-    <tr><td>M3 Inodes and folders</td><td>Path lookup, create, delete, rename, read and write.</td><td rowspan="2"><code>src/fs/filesystem.c</code></td><td class="num" rowspan="2">808</td></tr>
+    <tr><td>M2 FUSE adapter</td><td>Receives each Linux call, parses the options, starts the dispatcher after daemonizing.</td><td><code>src/fuse/fuse_main.c</code></td><td class="num">268</td></tr>
+    <tr><td>M3 Inodes and folders</td><td>Path lookup, locking, create, delete, rename, read, write, truncate.</td><td rowspan="2"><code>src/fs/filesystem.c</code></td><td class="num" rowspan="2">882</td></tr>
     <tr><td>M4 Blocks and mapping</td><td>Free-block bitmap, hint-based allocation, direct and indirect mapping.</td></tr>
-    <tr><td>M5 Request queue</td><td>The bounded producer-consumer queue and each request's "done" signal.</td><td><code>src/sync/request_queue.c</code></td><td class="num">149</td></tr>
-    <tr><td>M6 Disk scheduler</td><td>Chooses the next request: FCFS, SSTF, SCAN or Adaptive.</td><td><code>src/sched/scheduler.c</code></td><td class="num">113</td></tr>
-    <tr><td>M7 Virtual disk</td><td>The single dispatcher thread that does every <code>pread</code>/<code>pwrite</code>.</td><td><code>src/storage/virtual_disk.c</code></td><td class="num">124</td></tr>
-    <tr><td>M8 Metrics and logs</td><td>Counts requests, seek and waiting time; writes <code>filesystem.log</code>.</td><td><code>metrics.c</code>, <code>logger.c</code></td><td class="num">84</td></tr>
-    <tr><td>M9 Benchmark</td><td>Replays five fixed traces under every policy; draws graphs.</td><td><code>benchmark_main.c</code>, <code>scripts/</code></td><td class="num">246</td></tr>
-    <tr><td>M10 Tests and build</td><td>The Makefile, unit, core and mounted tests.</td><td><code>tests/</code>, <code>Makefile</code></td><td class="num">200</td></tr>
+    <tr><td>M5 Request queue</td><td>The bounded producer-consumer queue and each request's "done" signal.</td><td><code>src/sync/request_queue.c</code></td><td class="num">155</td></tr>
+    <tr><td>M6 Scheduler, simulator</td><td>The six policies, the movement model, the simulated-clock simulator.</td><td><code>scheduler.c</code>, <code>sim.c</code></td><td class="num">273</td></tr>
+    <tr><td>M7 Virtual disk</td><td>The single dispatcher thread: I/O, <code>O_DIRECT</code>, modeled service time, trace.</td><td><code>src/storage/virtual_disk.c</code></td><td class="num">303</td></tr>
+    <tr><td>M8 Metrics and logs</td><td>Counts requests, movement, waits and queue depth; writes <code>filesystem.log</code>.</td><td><code>metrics.c</code>, <code>logger.c</code></td><td class="num">88</td></tr>
+    <tr><td>M9 Simulation, workload, experiments</td><td>Simulation driver, the mounted workload, experiment and analysis scripts, demo.</td><td><code>benchmark_main.c</code>, <code>workload.c</code>, <code>scripts/</code></td><td class="num">1,192</td></tr>
+    <tr><td>M10 Tests and build</td><td>Makefile, scheduler, core, regression and mounted tests, old-defect check.</td><td><code>tests/</code>, <code>Makefile</code></td><td class="num">864</td></tr>
   </tbody>
 </table>
 <table>
   <thead><tr><th>Member</th><th>Modules they built</th><th class="num">LOC</th></tr></thead>
   <tbody>
-    <tr><td>Saanvi Grover</td><td>M1, M2, logger (M8)</td><td class="num">494</td></tr>
-    <tr><td>Prankit Goel</td><td>M5, M6, M7</td><td class="num">428</td></tr>
-    <tr><td>Aditya Sharma</td><td>M3, M4</td><td class="num">773</td></tr>
-    <tr><td>Aaradhya Shankar Kulashri</td><td>Metrics (M8), M9, M10</td><td class="num">408</td></tr>
+    <tr><td>Saanvi Grover</td><td>M1, M2, logger (M8)</td><td class="num">496</td></tr>
+    <tr><td>Prankit Goel</td><td>M5, M6 (scheduler and simulator), M7</td><td class="num">731</td></tr>
+    <tr><td>Aditya Sharma</td><td>M3, M4 (<code>filesystem.c</code>)</td><td class="num">882</td></tr>
+    <tr><td>Aaradhya Shankar Kulashri</td><td>Metrics (M8), M9, M10</td><td class="num">2,096</td></tr>
   </tbody>
 </table>
+<p class="note">Rule: each file counts to the module it implements, headers with their source file; experiment, analysis and demo scripts count to M9, and <code>check_old_defects.sh</code> to M10.</p>
 
 <!-- ======================= 07 ======================= -->
 <h2><span class="n">07</span>The disk layout</h2>
-<p class="sub">The "disk" is one file. <code>mkfs.schedfs disk.img 16M</code> splits it into 4,096 blocks of 4 KB, in four regions.</p>
+<p class="sub">The "disk" is one file. <code>mkfs.schedfs disk.img 16M</code> splits it into 4,096 blocks of 4 KB, in four regions (the experiments use 64 MiB images, 16,384 blocks).</p>
 <table>
   <thead><tr><th style="width:22%">Region</th><th style="width:16%">Blocks</th><th>What it stores</th></tr></thead>
   <tbody>
@@ -354,76 +359,99 @@
 <ul class="dots">
   <li><b>Biggest file:</b> 12 + 1,024 = <b>1,036 blocks</b>, about 4.05 MiB. One block more returns "File too large" (<code>EFBIG</code>).</li>
   <li><b>Holes:</b> a block pointer of 0 means "not written yet". Reading it gives zeros, so <code>truncate -s 8192</code> grows a file without using any blocks.</li>
-  <li><b>Keeping files together:</b> a new block is searched for right after the file's previous block first, so a file's blocks sit side by side and reading it needs short seeks.</li>
-  <li><b>Opening a path:</b> <code>/project/demo.txt</code> = read the root folder (inode 1), find <code>project</code>, read that folder, find <code>demo.txt</code>.</li>
+  <li><b>The tail rule:</b> bytes of the last block beyond the file size are always zero. Shrinking inside a block zeroes the cut-off part, so growing the file again shows zeros, not old bytes (finding B).</li>
+  <li><b>Keeping files together:</b> a new block is searched for right after the file's previous block first, so a file's blocks sit side by side.</li>
 </ul>
-<div class="key"><span class="k">Good to mention</span><span>The sizes are guaranteed by the compiler: <code>_Static_assert</code> checks that the superblock header and an inode are exactly 128 bytes and a directory entry 64 bytes. On mount, a wrong magic number, version, block size or root inode is refused, so a random file is never treated as a SchedFS disk.</span></div>
+<div class="key"><span class="k">Good to mention</span><span>The sizes are guaranteed by the compiler: <code>_Static_assert</code> checks that the superblock header and an inode are exactly 128 bytes and a directory entry 64 bytes. On mount, a wrong magic number, version, block size or root inode is refused.</span></div>
 
 <!-- ======================= 08 ======================= -->
 <h2><span class="n">08</span>Disk scheduling, the heart of the project</h2>
-<p class="sub">Expect most questions here. Learn the four policies, the Adaptive formula, the worked example and the real results.</p>
-<h3>Four policies, one question</h3>
+<p class="sub">Expect most questions here. Learn the six policies, the deadline rule and its limits, why Adaptive can starve, and the measured results with their cost.</p>
+<h3>Six policies, one question</h3>
 <p>Every policy answers: <i>which waiting request should the disk serve next?</i> All of them break ties by arrival time, then by request ID, so the same input always gives the same order.</p>
 <table>
-  <thead><tr><th style="width:17%">Policy</th><th>Rule</th><th style="width:26%">Good at</th><th style="width:26%">Weak at</th></tr></thead>
+  <thead><tr><th style="width:15%">Policy</th><th>Rule</th><th style="width:25%">Good at</th><th style="width:27%">Weak at</th></tr></thead>
   <tbody>
-    <tr><td>FCFS</td><td>Oldest request first, like a ticket queue.</td><td>Fair; nobody waits forever.</td><td>The head zig-zags; long seeks.</td></tr>
-    <tr><td>SSTF</td><td>Nearest block to the head first.</td><td>Shortest seeks on scattered traffic.</td><td>A far request can starve.</td></tr>
-    <tr><td>SCAN</td><td>Keep moving one way, serve requests on the way, then turn around (the lift).</td><td>Short seeks and fair to both ends.</td><td>Requests just behind the head wait a full sweep.</td></tr>
-    <tr><td>Adaptive</td><td>Lowest score wins; the score mixes distance and waiting time.</td><td>Tunable between speed and fairness.</td><td>Needs tuning for each workload.</td></tr>
+    <tr><td>FCFS</td><td>Oldest request first, like a ticket queue.</td><td>Fair; nobody waits forever.</td><td>A small read waits behind every queued write.</td></tr>
+    <tr><td>SSTF</td><td>Nearest block to the head first.</td><td>Least movement, most throughput.</td><td>A distant request can starve.</td></tr>
+    <tr><td>SCAN</td><td>Move one way serving requests, go to the disk edge, turn (the lift).</td><td>Even sweep.</td><td>The edge trips cost time on the modeled disk.</td></tr>
+    <tr><td>LOOK</td><td>Like SCAN, but turn at the last request.</td><td>SCAN without the edge trip.</td><td>A request just behind the head waits a full sweep.</td></tr>
+    <tr><td>Adaptive</td><td>Lowest α·distance/N − β·wait/longest wait.</td><td>A heuristic blend of distance and age.</td><td>No starvation guarantee (see below).</td></tr>
+    <tr><td>Deadline</td><td>Overdue requests first, earliest deadline first; otherwise the nearest block.</td><td>Reads served promptly; writes keep some locality.</td><td>Gives up part of SSTF's throughput; not real-time.</td></tr>
   </tbody>
 </table>
-<h3>The Adaptive score in plain words</h3>
-<pre>score = α · (distance ÷ total blocks) − β · (wait ÷ longest wait)      α = 0.7, β = 0.3</pre>
+
+<h3>The deadline rule</h3>
+<pre>deadline = arrival + 0 ms   (reads,  --read-deadline-ms)
+deadline = arrival + 2 ms   (writes, --write-deadline-ms)
+if any request is overdue (deadline &lt;= now): serve the earliest deadline (ties: arrival, id)
+else:                                         serve the nearest block (SSTF)</pre>
 <ul class="dots">
-  <li>A <b>near</b> request makes the first part small; an <b>old</b> request makes the second part large. Both lower the score, and the lowest score is served.</li>
-  <li>The longer a request waits, the better its score gets, until it wins. This is <b>ageing</b>, the classic cure for starvation.</li>
-  <li>With <b>β = 0</b> Adaptive is exactly SSTF. A larger β moves it toward FCFS. Both weights are set at mount time with <code>--alpha</code> and <code>--beta</code>.</li>
-  <li>Adaptive reads the real clock to measure waiting time, so its totals can shift slightly between runs. FCFS, SSTF and SCAN are exactly repeatable.</li>
+  <li><b>In practice:</b> every read is overdue at once, so reads are served oldest first. A write younger than 2 ms can be passed by reads and by nearer writes; after 2 ms it is served in deadline order.</li>
+  <li><b>Limits:</b> both deadlines 0 gives FCFS; very long deadlines give SSTF. Both are checked in the unit test (640 and 236 on the textbook trace).</li>
+  <li><b>Within one type</b> a later request can never overtake an overdue one, because every deadline is arrival + the same constant. <b>Across types</b> a read can pass an overdue write only if the read arrived before the write's deadline, so a stream of reads cannot starve a write.</li>
+  <li><b>Bound:</b> an overdue request R starts no later than deadline(R) + (Q − 1 + P) · S<sub>max</sub> + S<sub>current</sub> (Q = queue capacity, P = producers blocked at admission, S = service times). The dispatcher is non-preemptive, so this is <b>not a real-time guarantee</b>.</li>
+  <li><b>How the values were chosen:</b> on separate tuning runs (seed 101, never used in the evaluation). Read deadline 0 ms gave the lowest tail (mean p99/FCFS 0.69). A 50 ms write deadline made foreground updates worse, so writes were re-tuned: 2 ms (1 ms cost 22% throughput in one cell).</li>
 </ul>
+
+<h3>Why Adaptive can starve (finding C)</h3>
+<pre>score = α · (distance ÷ N) − β · (wait ÷ longest wait)      α = 0.7, β = 0.3, lowest wins</pre>
+<ul class="dots">
+  <li>The age part is divided by the longest wait in the queue, so it is <b>never worth more than β</b>, however long a request has waited.</li>
+  <li>So a request more than (β/α) · N ≈ 0.43 · N blocks farther than nearby work <b>never wins</b> while nearby work keeps arriving. Test: 0 picks in 10,000 decisions for a request 3,000 blocks away (N = 4,096); a request 1,200 blocks away is chosen at once.</li>
+  <li>Our first report called this "ageing that prevents starvation". That was wrong, and we corrected it. Adaptive is now a documented heuristic baseline.</li>
+</ul>
+
 <h3>Worked example: the textbook trace</h3>
-<p>The head is at block 53, moving toward 0. Waiting, in arrival order: 98, 183, 37, 122, 14, 124, 65, 67. Our unit test checks these orders and totals exactly.</p>
+<p>The head is at block 53, moving toward 0. Waiting, in arrival order: 98, 183, 37, 122, 14, 124, 65, 67. The unit test checks every order and total, and the regression test checks SCAN, LOOK and FCFS again through the real dispatcher.</p>
 <table>
-  <thead><tr><th style="width:12%">Policy</th><th>Order served</th><th class="num" style="width:20%">Head movement</th></tr></thead>
+  <thead><tr><th style="width:12%">Policy</th><th>Order served</th><th class="num" style="width:20%">Movement</th></tr></thead>
   <tbody>
     <tr><td>FCFS</td><td>98, 183, 37, 122, 14, 124, 65, 67</td><td class="num">640 blocks</td></tr>
     <tr><td>SSTF</td><td>65, 67, 37, 14, 98, 122, 124, 183</td><td class="num">236 blocks</td></tr>
     <tr><td>SCAN</td><td>37, 14, (to block 0, turn), 65, 67, 98, 122, 124, 183</td><td class="num">236 blocks</td></tr>
+    <tr><td>LOOK</td><td>37, 14, (turn), 65, 67, 98, 122, 124, 183</td><td class="num">208 blocks</td></tr>
   </tbody>
 </table>
-<div class="bars">
-  <div class="bar"><span>FCFS</span><div class="track"><div class="fill quiet" style="width:100%"></div></div><span class="v">640</span></div>
-  <div class="bar"><span>SSTF</span><div class="track"><div class="fill" style="width:36.9%"></div></div><span class="v">236</span></div>
-  <div class="bar"><span>SCAN</span><div class="track"><div class="fill" style="width:36.9%"></div></div><span class="v">236</span></div>
-</div>
-<p class="note">SCAN is charged for travelling all the way to block 0 before turning (53 down to 0, then up to 183), which is why it equals SSTF here and is not LOOK's 208.</p>
+<p class="note">Finding A: the old mounted metrics charged 208 for SCAN while the test charged 236. Now one function, <code>scheduler_advance()</code>, defines movement for the dispatcher, the simulator and the tests; SCAN pays the edge trip, LOOK does not.</p>
 
-<h3>Real results on the mounted file system</h3>
-<p>Four programs wrote 256 KB files at the same time, four read them back, then the files were deleted. Every run made exactly 4,927 block requests; only the order changed. Mean of three runs:</p>
+<h3>Measured results on the mounted file system</h3>
+<p>One foreground process opens a 64 KB file, reads 4 KB at a random offset and closes it every 20 ms, while background processes write 2 MB files. Fresh 64 MiB image per run, 3 runs × 10 s per cell (about 1,500 foreground samples). Two configurations: <b>direct</b> = real <code>O_DIRECT</code> I/O on the WSL 2 virtual disk; <b>model</b> = the same plus a modeled service time of 100 µs + 0.25 µs per block moved.</p>
+<p><b>Foreground p99 latency, model, 2 writers + small reads</b> (shorter is better):</p>
 <div class="bars">
-  <div class="bar"><span>FCFS</span><div class="track"><div class="fill quiet" style="width:100%"></div></div><span class="v">193,773</span></div>
-  <div class="bar"><span>Adaptive (−3.8%)</span><div class="track"><div class="fill" style="width:96.2%"></div></div><span class="v">186,376</span></div>
-  <div class="bar"><span>SCAN (−31.6%)</span><div class="track"><div class="fill" style="width:68.4%"></div></div><span class="v">132,537</span></div>
-  <div class="bar"><span>SSTF (−40.0%)</span><div class="track"><div class="fill" style="width:60.0%"></div></div><span class="v">116,180</span></div>
+  <div class="bar"><span>SSTF</span><div class="track"><div class="fill quiet" style="width:100%"></div></div><span class="v">33.85 ms</span></div>
+  <div class="bar"><span>LOOK</span><div class="track"><div class="fill quiet" style="width:64.9%"></div></div><span class="v">21.98 ms</span></div>
+  <div class="bar"><span>Adaptive</span><div class="track"><div class="fill quiet" style="width:62.1%"></div></div><span class="v">21.03 ms</span></div>
+  <div class="bar"><span>FCFS</span><div class="track"><div class="fill quiet" style="width:61.0%"></div></div><span class="v">20.64 ms</span></div>
+  <div class="bar"><span>Deadline (−27%)</span><div class="track"><div class="fill" style="width:44.7%"></div></div><span class="v">15.14 ms</span></div>
 </div>
-<p class="note">Bar length = total head movement in blocks (shorter is better). Adaptive stays near FCFS here because, on a 4,096-block disk, the distance part of its score stays below about 0.05 while the waiting part reaches 0.3, so age decides. Lowering β moves it toward SSTF.</p>
-
-<h3>The benchmark: five fixed traces</h3>
-<p><code>make bench</code> replays the same traces under every policy (head starts at 53). Total head movement in blocks:</p>
+<p><b>Foreground p99 latency, direct, 4 writers + small reads:</b></p>
+<div class="bars">
+  <div class="bar"><span>SSTF</span><div class="track"><div class="fill quiet" style="width:100%"></div></div><span class="v">19.95 ms</span></div>
+  <div class="bar"><span>LOOK</span><div class="track"><div class="fill quiet" style="width:49.9%"></div></div><span class="v">9.96 ms</span></div>
+  <div class="bar"><span>FCFS</span><div class="track"><div class="fill quiet" style="width:43.8%"></div></div><span class="v">8.73 ms</span></div>
+  <div class="bar"><span>Adaptive</span><div class="track"><div class="fill quiet" style="width:41.0%"></div></div><span class="v">8.17 ms</span></div>
+  <div class="bar"><span>Deadline (−52%)</span><div class="track"><div class="fill" style="width:21.2%"></div></div><span class="v">4.22 ms</span></div>
+</div>
 <table>
-  <thead><tr><th>Trace</th><th class="num">FCFS</th><th class="num">SSTF</th><th class="num">SCAN</th><th class="num">Adaptive</th></tr></thead>
+  <thead><tr><th>Workload</th><th class="num">Deadline vs FCFS p99</th><th class="num">Deadline vs FCFS MB/s</th><th>Note</th></tr></thead>
   <tbody>
-    <tr><td>Sequential (8 requests)</td><td class="num">50</td><td class="num">43</td><td class="num">43</td><td class="num">50</td></tr>
-    <tr><td>Random (7)</td><td class="num">631</td><td class="num">295</td><td class="num">229</td><td class="num">295</td></tr>
-    <tr><td>Clustered (7)</td><td class="num">58</td><td class="num">58</td><td class="num">164</td><td class="num">58</td></tr>
-    <tr><td>Mixed (11)</td><td class="num">736</td><td class="num">237</td><td class="num">229</td><td class="num">209</td></tr>
-    <tr><td>Concurrent (16)</td><td class="num">27,402</td><td class="num">4,029</td><td class="num">4,053</td><td class="num">4,523</td></tr>
+    <tr><td>model, 2 writers + reads</td><td class="num">15.14 vs 20.64 (−27%)</td><td class="num">3.66 vs 3.40</td><td>SSTF 4.56 MB/s but p99 33.85</td></tr>
+    <tr><td>model, 4 writers + reads</td><td class="num">30.76 vs 70.20 (−56%)</td><td class="num">1.22 vs 1.18</td><td>LOOK slightly better: 28.80 ms, 1.91 MB/s</td></tr>
+    <tr><td>model, 2 copiers + reads</td><td class="num">26.93 vs 40.34 (−33%)</td><td class="num">0.81 vs 0.89 (−9%)</td><td>SSTF 1.90 MB/s, p99 45.88</td></tr>
+    <tr><td>model, reads/updates</td><td class="num">18.90 vs 25.20 (−25%)</td><td class="num">3.42 vs 3.06</td><td></td></tr>
+    <tr><td>model, updates</td><td class="num">19.05 vs 22.73 (−16%)</td><td class="num">3.55 vs 3.10</td><td></td></tr>
+    <tr><td>direct, 2 writers + reads</td><td class="num">3.89 vs 4.98 (−22%)</td><td class="num">19.05 vs 21.84 (−13%)</td><td>SSTF p99 11.29</td></tr>
+    <tr><td>direct, 4 writers + reads</td><td class="num">4.22 vs 8.73 (−52%)</td><td class="num">17.80 vs 18.59</td><td>SSTF p99 19.95</td></tr>
+    <tr><td>direct, 2 copiers + reads</td><td class="num">7.42 vs 10.64 (−30%)</td><td class="num">9.04 vs 9.46</td><td></td></tr>
+    <tr><td>direct, reads/updates</td><td class="num">7.11 vs 7.20 (−1%)</td><td class="num">19.17 vs 18.10</td><td>no change</td></tr>
+    <tr><td>direct, updates</td><td class="num"><b>7.22 vs 5.83 (+24%)</b></td><td class="num">20.66 vs 19.54</td><td><b>a regression</b></td></tr>
   </tbody>
 </table>
 <ul class="dots">
-  <li>On the <b>concurrent</b> burst FCFS travels 6.8 times further than SSTF.</li>
-  <li>On the <b>clustered</b> trace SCAN is worst (164 vs 58): every request is above block 53, but SCAN first runs down to block 0 and back (53 + 111 = 164). <b>No single policy wins everywhere.</b></li>
-  <li>The benchmark adds a small delay per seek (10 µs + 2 µs per block moved) so the differences show up even on an SSD.</li>
+  <li><b>No background load:</b> no meaningful difference (p99 2.3–2.8 ms direct, 3.5–3.7 ms model), except SCAN on the model disk (36.7 ms), because SCAN pays the modeled edge trips.</li>
+  <li><b>Host Linux file system</b> (no FUSE, page cache): p99 about 0.05 ms. Reference only; not a fair scheduling comparison.</li>
+  <li><b>Simulation</b> (<code>schedfs-bench</code>, simulated clock, labelled as simulation): in <code>stream_far</code> SSTF and Adaptive leave a distant read waiting up to 395 and 393 simulated ms; Deadline serves it almost at once.</li>
 </ul>
 
 <!-- ======================= 09 ======================= -->
@@ -432,22 +460,22 @@
 <ul class="dots">
   <li><b>Bounded buffer:</b> one mutex guards an array of up to 128 requests. A producer that finds it full sleeps on <code>not_full</code>; the dispatcher that finds it empty sleeps on <code>not_empty</code>. No busy waiting.</li>
   <li><b>Always re-check:</b> every <code>pthread_cond_wait</code> sits inside a <code>while</code> loop, so a spurious wake-up is harmless.</li>
-  <li><b>Per-request "done" signal:</b> each request has its own mutex, condition variable and <code>completed</code> flag. The dispatcher sets the flag under that mutex before signalling, so a wake-up can never be lost.</li>
-  <li><b>Readers-writers on files:</b> each inode has a reader-writer lock. Many threads can read a file together; a write gets it alone.</li>
-  <li><b>Shared metadata:</b> separate mutexes for each directory, inode allocation, the inode table, the bitmap and the superblock.</li>
-  <li><b>Why one dispatcher?</b> "Head position" only means something if one place serves requests in order, like a real disk arm. It also lets the scheduler see every waiting request when it chooses.</li>
+  <li><b>Per-request "done" signal:</b> each request has its own mutex, condition variable and <code>completed</code> flag. The flag is set under that mutex before signalling, so a wake-up can never be lost.</li>
+  <li><b>Namespace lock (<code>ns_lock</code>):</b> a reader-writer lock on the directory tree. Create, mkdir, unlink, rmdir and rename take it for writing; lookups take it for reading only until they hold the file's lock.</li>
+  <li><b>Readers-writers on files:</b> each inode has a reader-writer lock. Many threads can read a file together; a write, truncate or free gets it alone.</li>
+  <li><b>Metadata order:</b> <code>bitmap_io_lock</code> and <code>super_io_lock</code> keep each snapshot together with its write, so an older bitmap can never overwrite a newer one on disk.</li>
 </ul>
 <h3>How deadlock is prevented</h3>
 <p>Locks are always taken in one global order, so a circular wait cannot form:</p>
-<pre>directory → inode rwlock → inode-alloc → inode-table → bitmap → superblock → queue</pre>
+<pre>ns_lock → inode lock → directory lock → inode-alloc → inode-table
+  → bitmap I/O → bitmap → superblock I/O → superblock → queue mutex → request mutex</pre>
 <table>
   <thead><tr><th style="width:34%">Safeguard</th><th>Why</th></tr></thead>
   <tbody>
-    <tr><td>Queue mutex taken last</td><td>And never held during <code>pread</code>/<code>pwrite</code>, so slow I/O never blocks other threads from queueing.</td></tr>
-    <tr><td>Request mutex never nested</td><td>The per-request completion lock is never held together with any other lock.</td></tr>
-    <tr><td>Dispatcher uses only two locks</td><td>The queue mutex and the request's own mutex, so a thread holding file locks while it waits for I/O cannot block it.</td></tr>
-    <tr><td>Bitmap snapshot</td><td>The bitmap is copied under <code>bitmap_lock</code> before it is written to disk, so the copy cannot change halfway.</td></tr>
-    <tr><td>Dispatcher started in <code>op_init</code></td><td>FUSE calls <code>fork()</code> to go into the background, and only the calling thread survives a fork. Starting the dispatcher after the fork keeps it alive.</td></tr>
+    <tr><td>Dispatcher uses only two locks</td><td>The queue mutex and the request's own mutex, one at a time. A thread that holds file locks while it waits for its I/O can never block the thread that will wake it.</td></tr>
+    <tr><td>Queue mutex never held during I/O</td><td>The dispatcher takes the request out and releases the mutex before <code>pread</code>/<code>pwrite</code>.</td></tr>
+    <tr><td>Inode freed under its write lock</td><td><code>unlink</code> removes the name under <code>ns_lock</code>, then waits for the inode's write lock before freeing blocks, so readers and writers still using it finish first.</td></tr>
+    <tr><td>Dispatcher started in <code>op_init</code></td><td>FUSE calls <code>fork()</code> to go into the background, and only the calling thread survives a fork.</td></tr>
   </tbody>
 </table>
 
@@ -456,132 +484,141 @@
 <table>
   <thead><tr><th style="width:32%">Risk</th><th>What we did</th></tr></thead>
   <tbody>
-    <tr><td>Two threads change the same data</td><td>Mutexes and reader-writer locks on every shared structure; ThreadSanitizer reports no data race in the 4-thread test.</td></tr>
+    <tr><td>Two threads change the same data</td><td>Locks on every shared structure; ThreadSanitizer clean in repeated runs of the core and regression tests.</td></tr>
+    <tr><td>A file is deleted while in use</td><td>The inode is freed only under its write lock, after every user has finished; no reader can see a reused inode.</td></tr>
+    <tr><td>Two creates of the same name</td><td>Serialized by the namespace lock: exactly one succeeds, the other gets <code>EEXIST</code>.</td></tr>
+    <tr><td>Moving a folder into itself</td><td><code>rename</code> refuses with <code>EINVAL</code>.</td></tr>
     <tr><td>Deadlock</td><td>One documented global lock order, followed on every path.</td></tr>
-    <tr><td>Requests pile up without limit</td><td>The queue is bounded at 128; producers wait instead of using more memory.</td></tr>
+    <tr><td>Requests pile up without limit</td><td>The queue is bounded at 128; producers wait instead of using more memory. Nothing is dropped.</td></tr>
     <tr><td>Mounting a file that is not a SchedFS disk</td><td>Magic number, version, block size and root inode are checked; the mount is refused with a clear error.</td></tr>
     <tr><td>Formatting over an existing image</td><td><code>mkfs.schedfs</code> opens with <code>O_EXCL</code> and refuses to overwrite a file that exists.</td></tr>
-    <tr><td>Disk full or file too big</td><td>Returns "No space left on device" (<code>ENOSPC</code>) or "File too large" (<code>EFBIG</code>) instead of corrupting data.</td></tr>
-    <tr><td>Bad names and paths</td><td>Names over 59 characters, existing names, missing paths and non-empty folders get the normal Linux errors (<code>ENAMETOOLONG</code>, <code>EEXIST</code>, <code>ENOENT</code>, <code>ENOTEMPTY</code>).</td></tr>
+    <tr><td>Disk full or file too big</td><td>"No space left on device" (<code>ENOSPC</code>) or "File too large" (<code>EFBIG</code>) instead of corrupting data.</td></tr>
     <tr><td>Short reads and interrupted calls</td><td>Every <code>pread</code>/<code>pwrite</code> loops until the whole block is done and retries on <code>EINTR</code>.</td></tr>
-    <tr><td>A block number out of range</td><td>Refused before it reaches the queue (<code>EINVAL</code>).</td></tr>
-    <tr><td>Running as root</td><td>Not needed and not advised; the mounted test refuses to run as root.</td></tr>
   </tbody>
 </table>
 
 <!-- ======================= 11 ======================= -->
 <h2><span class="n">11</span>Bugs we found and fixed</h2>
-<p class="sub">Showing that you found and fixed your own bugs impresses examiners.</p>
+<p class="sub">Showing that you found and fixed your own bugs, and corrected your own claims, impresses examiners.</p>
+<h3>From the first version</h3>
 <ol class="plain">
-  <li><b>Lost inode updates.</b> 32 inodes share one 4 KB block, so changing one is read, change, write back. Two threads changing different inodes in the same block could each write back their own copy, and one update was lost. <code>test_core</code> failed about 30% of runs. A new inode-table mutex fixed it: 0 failures in 100 runs.</li>
-  <li><b>Bitmap race found by ThreadSanitizer.</b> The bitmap was handed to the dispatcher while another thread could still change it. It is now copied under <code>bitmap_lock</code> first.</li>
-  <li><b>Hang when mounted in the background.</b> Without <code>-f</code>, FUSE forks into the background, and threads do not survive <code>fork()</code>. The dispatcher vanished, so the first <code>mkdir</code> waited forever. The dispatcher now starts in FUSE's <code>init</code> callback, inside the background process.</li>
-  <li><b>Image not found after going to the background.</b> The background process changes its folder to <code>/</code>, so a relative path like <code>disk.img</code> broke. The path is now made absolute with <code>realpath</code> before mounting.</li>
+  <li><b>Lost inode updates.</b> 32 inodes share one 4 KB block, so two threads changing different inodes could each write back their own copy. An inode-table mutex fixed it.</li>
+  <li><b>Hang when mounted in the background.</b> Threads do not survive <code>fork()</code>, so the dispatcher vanished. It now starts in FUSE's <code>init</code> callback.</li>
+  <li><b>Image not found after going to the background.</b> The daemon changes its folder to <code>/</code>; paths are now made absolute with <code>realpath</code>.</li>
 </ol>
-<p>The background-mount fix has a regression test in <code>tests/system.sh</code>: it mounts without <code>-f</code>, writes a file, remounts under another policy and checks the data, with timeouts so a hang fails instead of blocking.</p>
+<h3>From the review (findings A to E)</h3>
+<table>
+  <thead><tr><th style="width:6%"></th><th style="width:34%">Finding</th><th>What we did and how we know</th></tr></thead>
+  <tbody>
+    <tr><td>A</td><td>SCAN movement was 236 in the test but 208 in the mounted metrics.</td><td>One movement model, <code>scheduler_advance()</code>; SCAN (236) and LOOK (208) are separate policies; checked through the real dispatcher.</td></tr>
+    <tr><td>B</td><td>Shrinking a file inside a block kept the cut-off bytes.</td><td>Fixed: "ABCDEFGH" → truncate 3 → truncate 8 now gives "ABC" + 5 zero bytes. Tests for partial blocks, exact boundaries, sparse extension, writes past the end and remount.</td></tr>
+    <tr><td>C</td><td>We claimed Adaptive prevents starvation by ageing.</td><td>Wrong: its age term is capped at β. 0 picks in 10,000 decisions. Claim withdrawn; Adaptive kept as a heuristic baseline.</td></tr>
+    <tr><td>D</td><td>Concurrency races.</td><td>Confirmed and fixed: unlink freed blocks without the inode lock (a reader saw another file's data), concurrent create made duplicate names, rename could move a folder into its own subtree, statfs read counters without a lock. New <code>ns_lock</code>, freeing under the write lock, metadata I/O locks (a suspected risk, fixed defensively).</td></tr>
+    <tr><td>E</td><td>The benchmark mixed simulation and measurement.</td><td><code>schedfs-bench</code> is now a labelled deterministic simulation with a simulated clock; "concurrent" trace renamed "interleaved"; mounted experiments are separate and measured.</td></tr>
+  </tbody>
+</table>
+<p><code>scripts/check_old_defects.sh</code> builds the regression tests against the original <code>filesystem.c</code>: the truncate, create, unlink and rename tests <b>fail there</b> and pass now. The metadata-order test passes on both (the risk was not reproduced).</p>
 
 <!-- ======================= 12 ======================= -->
 <h2><span class="n">12</span>Testing</h2>
 <ul class="dots">
-  <li><b>Unit test</b> (<code>tests/test_scheduler.c</code>): the textbook trace under FCFS, SSTF and SCAN; every service order and total (640, 236, 236) is checked exactly.</li>
-  <li><b>Core test</b> (<code>tests/test_core.c</code>): formats an image, then 4 threads each write a 64 KB file at the same time; the image is unmounted, mounted again, and every file is checked byte by byte.</li>
-  <li><b>Mounted test</b> (<code>tests/system.sh</code>): a real FUSE mount under all four policies, using <code>mkdir</code>, <code>cp</code>, <code>cmp</code>, <code>truncate</code>, <code>stat</code>, <code>mv</code>, <code>rm</code> and <code>rmdir</code>, plus the background-mount and remount check.</li>
-  <li><b>ThreadSanitizer</b>: the core test rebuilt with <code>-fsanitize=thread</code>; no data races reported.</li>
-  <li><b>Benchmark</b>: five fixed traces under every policy, written to <code>benchmark.csv</code>.</li>
+  <li><b>Scheduler test</b> (<code>tests/test_scheduler.c</code>, 119 checks, simulated clock): textbook trace for all policies (640, 236, 236, 208, deadline limits), the movement model, a distant request amid continuous nearby arrivals (FCFS next, SSTF last after more than 190 ms, Deadline at 5.05 ms with a 5 ms test deadline, a write at 50.05 ms), the Adaptive bound, deadline order and ties, queue saturation and shutdown.</li>
+  <li><b>Core test</b> (<code>tests/test_core.c</code>): 4 threads write 64 KB files at once; remount; byte-by-byte check.</li>
+  <li><b>Regression test</b> (<code>tests/test_regress.c</code>): findings A, B and D, with an fsck-style checker after each phase (no block used twice, bitmap matches, counters match, nothing leaked).</li>
+  <li><b>Mounted test</b> (<code>tests/system.sh</code>): a real FUSE mount under all six policies; truncate check, rename refusal and persistence through the kernel; background mount.</li>
+  <li><b>ThreadSanitizer</b> (<code>make tsan</code>): core and regression tests; clean in repeated runs (one early run failed once with an uncaptured message; unexplained).</li>
+  <li><b>Experiments</b>: tuning on seed 101, evaluation on seeds 1001–1003, 3 runs × 10 s per cell.</li>
 </ul>
-<p><b>Result:</b> all 25 documented test cases pass. <code>make test</code> ends with "scheduler tests passed", "core persistence and concurrency tests passed" and "FUSE system tests passed".</p>
+<p><b>Result:</b> 40 documented test cases. All 38 correctness cases pass. Of the 2 performance goals, "Deadline beats FCFS for foreground reads" is met in all 6 cells; "Deadline is not worse than FCFS for foreground updates" is <b>not met</b> with real I/O (+24%).</p>
 
 <!-- ======================= 13 ======================= -->
 <h2><span class="n">13</span>Limitations and future scope</h2>
 <p class="sub">Be honest here. Admitting limits clearly is a strength in a viva.</p>
 <h3>Limitations</h3>
 <ul class="dots">
-  <li><b>No journal:</b> a crash while mounted can leave the image inconsistent, so a clean unmount is needed.</li>
-  <li><b>Small files only:</b> at most 1,036 blocks (about 4.05 MiB) per file, and 256 inodes per disk.</li>
-  <li><b>Fewer features than ext4:</b> no symbolic or hard links, no <code>chmod</code>/<code>chown</code>, and <code>rename</code> will not replace an existing file. Opening a file checks only that it exists and is not a folder.</li>
-  <li><b>Seek is modelled:</b> head movement is |current block − next block|. The image lives on an SSD, so we measure the scheduler's decisions, not a real disk arm.</li>
-  <li><b>Adaptive needs tuning:</b> with the default weights it behaved almost like FCFS on the mounted workload.</li>
+  <li><b>One machine, no real hard disk:</b> all measurements are from one Windows 11 + WSL 2 machine. The "model" configuration's seek time is a model.</li>
+  <li><b>Reads only:</b> the policy helps foreground reads during background writes. Foreground updates with real I/O got 24% slower than FCFS, and with 4 writers on the modeled disk LOOK was slightly better.</li>
+  <li><b>Not real-time:</b> the dispatcher is non-preemptive and an operation is a chain of requests, so no completion time is promised.</li>
+  <li><b>Read or write only:</b> requests are classified by operation type; there is no per-process or per-file priority.</li>
+  <li><b>FUSE is slow:</b> about two orders of magnitude slower per operation than the host file system with its page cache.</li>
+  <li><b>No journal:</b> a clean unmount is needed. Files up to 1,036 blocks (about 4.05 MiB), 256 inodes, no links, no permission enforcement.</li>
 </ul>
 <h3>Future scope</h3>
 <ul class="dots">
-  <li>Add a journal and an <code>fsck</code> checker for crash safety.</li>
-  <li>Double-indirect blocks for bigger files.</li>
-  <li>More policies: C-SCAN, LOOK and deadline-based scheduling.</li>
-  <li>A block cache, and auto-tuning of α and β to the workload.</li>
-  <li>Log each scheduling decision for a step-by-step replay.</li>
+  <li>Give a foreground write its own, shorter deadline (for example by caller), to fix the update regression.</li>
+  <li>Measure on a physical hard disk and on other machines.</li>
+  <li>A journal and an <code>fsck</code> tool for crash safety; double-indirect blocks for bigger files.</li>
+  <li>A block cache, and C-SCAN as another baseline.</li>
 </ul>
 
 <!-- ======================= 14 ======================= -->
 <h2><span class="n">14</span>Numbers to remember</h2>
 <div class="nums">
-  <div class="nb"><div class="big">4</div><div class="small">scheduling policies</div></div>
-  <div class="nb"><div class="big">10</div><div class="small">modules</div></div>
-  <div class="nb"><div class="big">2,103</div><div class="small">lines of code</div></div>
-  <div class="nb"><div class="big">4 KB</div><div class="small">block size</div></div>
-  <div class="nb"><div class="big">4,096</div><div class="small">blocks in a 16 MiB image</div></div>
-  <div class="nb"><div class="big">256 × 128 B</div><div class="small">inodes</div></div>
-  <div class="nb"><div class="big">12 + 1</div><div class="small">direct + indirect pointers</div></div>
-  <div class="nb"><div class="big">1,036</div><div class="small">blocks max per file (4.05 MiB)</div></div>
-  <div class="nb"><div class="big">128</div><div class="small">queue capacity</div></div>
-  <div class="nb"><div class="big">1</div><div class="small">dispatcher thread</div></div>
-  <div class="nb"><div class="big">0.7 / 0.3</div><div class="small">Adaptive α and β</div></div>
-  <div class="nb"><div class="big">640 / 236</div><div class="small">textbook: FCFS vs SSTF and SCAN</div></div>
-  <div class="nb"><div class="big">−40%</div><div class="small">SSTF vs FCFS on the real mount</div></div>
-  <div class="nb"><div class="big">4,927</div><div class="small">requests per mounted run</div></div>
-  <div class="nb"><div class="big">6.8×</div><div class="small">FCFS vs SSTF, concurrent trace</div></div>
-  <div class="nb"><div class="big">25</div><div class="small">test cases, all passing</div></div>
+  <div class="nb"><div class="big">6</div><div class="small">scheduling policies</div></div>
+  <div class="nb"><div class="big">0 / 2 ms</div><div class="small">read / write deadline</div></div>
+  <div class="nb"><div class="big">−22 to −56%</div><div class="small">foreground read p99 vs FCFS</div></div>
+  <div class="nb"><div class="big">+24%</div><div class="small">update p99 vs FCFS, direct (regression)</div></div>
+  <div class="nb"><div class="big">−13 to +8%</div><div class="small">background MB/s vs FCFS, read cells</div></div>
+  <div class="nb"><div class="big">20–60%</div><div class="small">less throughput than SSTF (model)</div></div>
+  <div class="nb"><div class="big">3 × 10 s</div><div class="small">runs per cell, ~1,500 samples</div></div>
+  <div class="nb"><div class="big">~11</div><div class="small">block requests per small read</div></div>
+  <div class="nb"><div class="big">640 / 236 / 208</div><div class="small">textbook: FCFS / SSTF, SCAN / LOOK</div></div>
+  <div class="nb"><div class="big">0 of 10,000</div><div class="small">Adaptive picks of a distant request</div></div>
+  <div class="nb"><div class="big">100 + 0.25 µs</div><div class="small">modeled service time per block moved</div></div>
+  <div class="nb"><div class="big">0.05 ms</div><div class="small">host FS p99 (reference only)</div></div>
+  <div class="nb"><div class="big">4,205</div><div class="small">lines of code, 10 modules</div></div>
+  <div class="nb"><div class="big">128</div><div class="small">queue capacity, 1 dispatcher</div></div>
+  <div class="nb"><div class="big">119</div><div class="small">scheduler test checks</div></div>
+  <div class="nb"><div class="big">40</div><div class="small">test cases: 39 pass, 1 not met</div></div>
 </div>
 
 <!-- ======================= 15 ======================= -->
 <h2><span class="n">15</span>Live demo script</h2>
-<p class="sub">About ten minutes, in this order. Use the Docker image (Ubuntu 24.04 with <code>/dev/fuse</code>) and work as a normal user, not root.</p>
+<p class="sub">About five minutes. Run <code>scripts/demo.sh</code> in the Docker container as a normal user; it pauses between its four steps (<code>NOPAUSE=1</code> runs straight through). Everything happens in a temporary folder.</p>
 <ol class="steps">
-  <li><div><span class="st">Show the idea</span><span class="tag">Browser</span><p>Open the demo page at <code>sharmaditya2k05.github.io/FUSE</code> and point at the request queue and the scheduler in the path of one <code>cat</code>.</p></div></li>
-  <li><div><span class="st">Build, format and mount</span><span class="tag">Terminal</span><p><code>make</code>, <code>./mkfs.schedfs disk.img 16M</code>, <code>mkdir -p mnt</code>, <code>./schedfs disk.img mnt --sched=sstf</code>, then <code>mount | grep schedfs</code> shows <code>fuse.schedfs</code>.</p></div></li>
-  <li><div><span class="st">Use it like a folder</span><span class="tag">Terminal</span><p><code>mkdir</code>, <code>echo</code> and <code>cat</code> a file; copy a 100,000-byte file and <code>cmp</code> it. It needs 25 blocks, so it uses the indirect block.</p></div></li>
-  <li><div><span class="st">Show error handling</span><span class="tag">Terminal</span><p><code>rmdir</code> a non-empty folder ("Directory not empty"), <code>mv</code> onto an existing name ("File exists"), <code>cat</code> a missing file ("No such file or directory").</p></div></li>
-  <li><div><span class="st">Unmount and read the log</span><span class="tag">Terminal</span><p><code>fusermount3 -u mnt</code>, then <code>cat filesystem.log</code>: the last line gives requests served and total seek.</p></div></li>
-  <li class="hot"><div><span class="st">Same workload, different policy</span><span class="tag">Terminal</span><p>Run <code>compare.sh</code> from the showcase guide under FCFS, SSTF and SCAN. Say: "same files, same number of requests, only the order changed".</p></div></li>
-  <li><div><span class="st">Watch the head move</span><span class="tag">Browser</span><p>Step through the textbook trace (640 / 236 / 236), then the concurrent benchmark (27,402 vs 4,029). Drag β to show Adaptive moving away from SSTF.</p></div></li>
-  <li><div><span class="st">Prove it is tested</span><span class="tag">Terminal</span><p><code>make test</code>: scheduler, core and FUSE system tests all pass.</p></div></li>
-  <li><div><span class="st">Close honestly</span><span class="tag">Talk</span><p>No journal, files up to about 4 MiB, seek is modelled; next steps are C-SCAN and LOOK, a block cache and tuning Adaptive.</p></div></li>
+  <li><div><span class="st">The problem</span><span class="tag">Talk · 0:00</span><p>"Importing a large dataset into a shared workspace while you open a config file or save notes: the small operation should not stall behind the bulk copy. SchedFS schedules its storage requests to keep small operations responsive."</p></div></li>
+  <li><div><span class="st">Step 1: a real file system</span><span class="tag">demo.sh · 0:30</span><p>Formats a 64 MiB image, mounts it with <code>--sched=deadline</code>, then <code>mkdir</code>, <code>echo</code>, <code>cat</code>, a 100 kB copy checked with <code>cmp</code>, <code>ls</code>, <code>df</code>. Say: "every block it reads or writes goes through one queue and one scheduler."</p></div></li>
+  <li class="hot"><div><span class="st">Step 2: live, FCFS then deadline</span><span class="tag">demo.sh · 1:15</span><p>Two background writers copy 2 MB files while a small file is read every 20 ms, on the modeled disk; same seed, fresh image. One line per second shows mean and worst latency, then p50/p95/p99. Say: "under FCFS a small read queues behind every write; under deadline reads go first and writes keep locality for 2 ms."</p></div></li>
+  <li class="hot"><div><span class="st">Step 3: the repeated runs</span><span class="tag">demo.sh · 3:00</span><p>Prints the <code>bg2_read</code> rows of <code>results/mounted/summary.md</code>. Read p99 and MB/s for FCFS, SSTF and deadline in both configurations. Say: "six seconds live can be noisy, so the claims come from these 3 × 10 s runs." Point at the cost: SSTF's higher throughput.</p></div></li>
+  <li><div><span class="st">Step 4: persistence</span><span class="tag">demo.sh · 4:00</span><p>Clean unmount, mount again under another policy: the files are still there and identical. Say: "no journal, so a clean unmount is required."</p></div></li>
+  <li><div><span class="st">Close honestly</span><span class="tag">Talk · 4:30</span><p>Reads improve; updates with real I/O did not; one machine, modeled seek in one configuration; deadline is not a real-time guarantee.</p></div></li>
 </ol>
 
 <!-- ======================= 16 ======================= -->
 <h2><span class="n">16</span>Likely viva questions</h2>
 
 <h3 class="group">Basics</h3>
-<div class="qa"><div class="q">What does SchedFS do?</div><div class="a">It is a working Linux file system in user space where every block read and write waits in a queue, and a chosen disk-scheduling policy decides the order. It shows file systems, disk scheduling and synchronization working together.</div></div>
-<div class="qa"><div class="q">What is FUSE?</div><div class="a">Filesystem in Userspace. A small kernel module forwards each file system call on a mount point to an ordinary program, which answers it. Our program is <code>schedfs</code>.</div></div>
-<div class="qa"><div class="q">Why FUSE and not a kernel module?</div><div class="a">A FUSE file system is a normal process: it can be debugged and restarted, and a bug cannot crash the computer. The cost is extra context switches, which does not matter because we study the order of block requests, not raw speed.</div></div>
-<div class="qa"><div class="q">Where is the disk?</div><div class="a">It is one ordinary file, <code>disk.img</code>, treated as 4,096 blocks of 4 KB. Only the dispatcher thread reads or writes it, with <code>pread</code> and <code>pwrite</code>.</div></div>
+<div class="qa"><div class="q">What does SchedFS do?</div><div class="a">It is a mountable Linux file system in user space whose every block read and write waits in one queue, served in the order a policy chooses. Its deadline policy keeps small file operations responsive while bulk transfers run, at a measured cost in throughput.</div></div>
+<div class="qa"><div class="q">Why FUSE?</div><div class="a">The whole file system runs as an ordinary process: we can trace every request, change the scheduler with a flag, and a bug cannot crash the kernel. The kernel still delivers real system calls from real programs. The cost is extra context switches per operation, which is why we compare policies inside SchedFS rather than claiming SchedFS is faster than a kernel file system.</div></div>
+<div class="qa"><div class="q">Where is the disk?</div><div class="a">One ordinary file, <code>disk.img</code>, treated as numbered 4 KB blocks. Only the dispatcher thread reads or writes it; in the experiments it is opened with <code>O_DIRECT</code> so requests reach the WSL 2 virtual disk instead of the host page cache.</div></div>
 
-<h3 class="group">Flow and logic</h3>
-<div class="qa"><div class="q">What happens when I write to a file?</div><div class="a">The kernel passes the call to our FUSE adapter; the file system locks the inode, finds or allocates the block, and puts a request in the queue; the dispatcher asks the scheduler for the next request, does <code>pwrite</code>, and wakes the caller.</div></div>
-<div class="qa"><div class="q">How does a file find its blocks?</div><div class="a">The inode has 12 direct pointers; after that, a single-indirect block holds 1,024 more. <code>bmap</code> turns "block n of this file" into a disk block number, allocating one when writing.</div></div>
-<div class="qa"><div class="q">How is free space tracked?</div><div class="a">With a bitmap in block 1: one bit per block. Allocation searches from a hint (the file's previous block) and wraps around once, then writes the bitmap and superblock back.</div></div>
-<div class="qa"><div class="q">Why does the mount start the dispatcher in op_init?</div><div class="a">FUSE calls <code>fork()</code> to go into the background, and only the calling thread survives a fork. Starting the dispatcher in the <code>init</code> callback, after the fork, keeps it alive. Before this fix the first command hung.</div></div>
+<h3 class="group">The deadline policy</h3>
+<div class="qa"><div class="q">Explain the deadline policy.</div><div class="a">Each request gets a deadline: arrival + 0 ms for reads, arrival + 2 ms for writes. If any request is overdue, the one with the earliest deadline is served; otherwise the nearest block. So reads go first, oldest first, and writes are ordered by locality for at most about 2 ms.</div></div>
+<div class="qa"><div class="q">Is this your invention?</div><div class="a">No. Deadline scheduling is established; the Linux deadline I/O scheduler also gives reads and writes separate expiry times. Our contribution is implementing it, with five other policies, in a working file system's request path, and evaluating it on mounted workloads with the same instrumentation.</div></div>
+<div class="qa"><div class="q">Why might the policy help?</div><div class="a">A small file operation is a chain of about 11 dependent block requests, and each waits behind whatever is queued. Under FCFS each read waits for the writes ahead of it; under SSTF a distant read can wait for many nearby writes. Deadline serves reads first and keeps the writes ordered by locality, so reads stop queueing behind writes while writes keep much of SSTF's short movement.</div></div>
+<div class="qa"><div class="q">Can a request still wait a long time?</div><div class="a">Yes, within limits. The dispatcher is non-preemptive, so an overdue request still waits for the one in service and for requests with earlier deadlines: at most queue capacity − 1 plus producers blocked at admission. A write waits up to its 2 ms deadline plus that. A file operation can take longer than any one deadline because it is a chain. Deadlines are not real-time guarantees.</div></div>
+<div class="qa"><div class="q">What happens under overload?</div><div class="a">Every request becomes overdue, so the policy becomes earliest-deadline-first: FCFS within each type, reads before writes of the same age. Queues and waits grow as under FCFS; the bounded queue (128) blocks producers instead of using unbounded memory. Nothing is dropped.</div></div>
+<div class="qa"><div class="q">How were 0 ms and 2 ms chosen?</div><div class="a">On separate tuning runs with seed 101, never used in the evaluation. 0 ms for reads gave the lowest tail (mean p99/FCFS 0.69). A 50 ms write deadline made foreground updates worse, so writes were re-tuned; 2 ms was chosen because 1 ms cost 22% of throughput in one cell.</div></div>
 
-<h3 class="group">Scheduling</h3>
-<div class="qa"><div class="q">Explain FCFS, SSTF and SCAN.</div><div class="a">FCFS serves in arrival order. SSTF serves the request nearest the head. SCAN moves in one direction serving requests on the way, then reverses, like a lift.</div></div>
-<div class="qa"><div class="q">What is starvation and how does Adaptive prevent it?</div><div class="a">Starvation is a request that keeps losing and waits forever, which can happen under SSTF. Adaptive subtracts a waiting-time term from the score (ageing), so an old request's score keeps improving until it is served.</div></div>
-<div class="qa"><div class="q">What is the Adaptive formula?</div><div class="a">score = α · distance/total blocks − β · wait/longest wait, with α = 0.7 and β = 0.3 by default. The lowest score wins. With β = 0 it is exactly SSTF.</div></div>
-<div class="qa"><div class="q">Why did SCAN lose on the clustered trace?</div><div class="a">The head started at 53 moving down, but every request was above it. SCAN is charged for going to block 0 before turning: 53 + 111 = 164 blocks, against 58 for FCFS. No policy wins on every workload.</div></div>
-<div class="qa"><div class="q">How is your SCAN different from LOOK?</div><div class="a">Our selection turns when nothing is left in the current direction, but the benchmark and unit test charge SCAN for travelling to the disk edge. That is why the textbook total is 236, not LOOK's 208.</div></div>
-<div class="qa"><div class="q">Why are the results deterministic?</div><div class="a">Ties are broken by arrival time and then request ID. FCFS, SSTF and SCAN give identical totals on every run; only Adaptive reads the real clock, so it can vary a little.</div></div>
-<div class="qa"><div class="q">Is the seek distance real?</div><div class="a">It is the textbook model, |current block − next block|. The image is on an SSD, so we measure the scheduler's choices, not physical arm movement. The benchmark adds a small delay per block moved to make differences visible.</div></div>
+<h3 class="group">Results and honesty</h3>
+<div class="qa"><div class="q">What is modeled and what is measured?</div><div class="a">Measured: the end-to-end latency of every foreground operation (the workload's own clock), background bytes per second, and per block request its arrival, start and end, queue depth and caller (the trace). Modeled: "movement" (block distance) and, in the model configuration, the service time (100 µs + 0.25 µs per block moved), standing in for a disk where position matters. The direct configuration has no modeled delay. The simulator (<code>schedfs-bench</code>) is a model end to end.</div></div>
+<div class="qa"><div class="q">What is the throughput trade-off?</div><div class="a">Against FCFS it is small: −13% to +6% (direct, mostly within run-to-run ranges) and −9% to +15% (model). Against SSTF, Deadline gives up 20 to 60% of background throughput on the modeled disk, because it uses locality only within the 2 ms window; in return its foreground p99 was 30 to 79% lower than SSTF's.</div></div>
+<div class="qa"><div class="q">What does this improve over, exactly?</div><div class="a">Over SchedFS's own FCFS, SSTF, SCAN, LOOK and Adaptive policies, on the same mounted file system and identical workloads, for small foreground reads while background processes write or copy: p99 22 to 56% lower than FCFS. It does not improve foreground updates with real I/O (+24% vs FCFS), and LOOK was slightly better with 4 writers on the modeled disk. It makes no claim about kernel file systems or kernel I/O schedulers; the host-file-system numbers are a reference only.</div></div>
+<div class="qa"><div class="q">Why did updates get worse?</div><div class="a">The foreground's own block writes are treated like background writes: they get the 2 ms write deadline and can wait behind other overdue writes. Classification is by operation type only.</div></div>
+<div class="qa"><div class="q">Is the difference real or noise?</div><div class="a">For the six read cells, the three-run ranges of Deadline and FCFS do not overlap. For direct updates the ranges also do not overlap, so the regression is real too. With no background load all policies are within each other's ranges.</div></div>
+<div class="qa"><div class="q">Which claims are supported by which tests?</div><div class="a">Exact orders and limits: <code>test_scheduler</code>. SCAN 236 / LOOK 208 everywhere: <code>test_scheduler</code> and <code>test_regress</code> (real dispatcher). Overdue requests not bypassed: <code>test_starvation</code>, <code>test_deadline_order</code>. Adaptive can starve: <code>test_adaptive_bound</code>. Truncate, create, unlink, rename fixed: <code>test_regress</code>, and <code>check_old_defects.sh</code> shows them failing on the old code. No races seen: <code>make tsan</code> (supporting evidence only). Works mounted under every policy and persists: <code>system.sh</code>. Lower tail latency at a throughput cost: <code>experiments.py matrix</code> and <code>results/mounted/summary.md</code>.</div></div>
+
+<h3 class="group">Scheduling basics</h3>
+<div class="qa"><div class="q">Explain FCFS, SSTF, SCAN and LOOK.</div><div class="a">FCFS serves in arrival order. SSTF serves the request nearest the head. SCAN moves one way serving requests, goes to the disk edge, then reverses, like a lift. LOOK reverses at the last request instead of the edge.</div></div>
+<div class="qa"><div class="q">Does Adaptive prevent starvation?</div><div class="a">No. Its age term is divided by the longest wait, so it is never worth more than β = 0.3. A request more than about 0.43 × N blocks farther than nearby work never wins while nearby work keeps arriving: 0 picks in 10,000 decisions. Our first report said otherwise; we corrected it.</div></div>
+<div class="qa"><div class="q">Why is SCAN so slow on the modeled disk?</div><div class="a">Every reversal pays the trip to the disk edge (16,384 blocks), and on the modeled disk that costs time: p99 82 to 119 ms with background load and 36.7 ms even with none. LOOK is the practical variant.</div></div>
+<div class="qa"><div class="q">Why are the results deterministic?</div><div class="a">Ties are broken by arrival time and then request ID, and the scheduler takes the current time as an argument. The tests and the simulator use a simulated clock, so every policy, even Deadline and Adaptive, gives exactly the same result every run. Mounted runs are measurements and vary, which is why we repeat them.</div></div>
 
 <h3 class="group">Synchronization</h3>
 <div class="qa"><div class="q">Which classic problem is the queue?</div><div class="a">The bounded-buffer (producer-consumer) problem: FUSE threads produce requests, the dispatcher consumes them, and a mutex with <code>not_full</code> and <code>not_empty</code> condition variables coordinates them.</div></div>
-<div class="qa"><div class="q">Why is every wait inside a while loop?</div><div class="a">A thread can wake without the condition being true (a spurious wake-up, or another thread got there first). Re-checking in a loop makes that harmless.</div></div>
-<div class="qa"><div class="q">How do you prevent deadlock?</div><div class="a">All threads take locks in one global order: directory, inode, inode-alloc, inode-table, bitmap, superblock, queue. A circular wait cannot form.</div></div>
-<div class="qa"><div class="q">Why reader-writer locks on inodes?</div><div class="a">Many threads can safely read the same file at once, but a write must be alone. A reader-writer lock allows exactly that, which is better than one mutex for reads.</div></div>
-<div class="qa"><div class="q">What was the hardest concurrency bug?</div><div class="a">Lost inode updates: 32 inodes share one block, so two threads could each write back their own copy and erase the other's change. An inode-table mutex fixed it, and the 4-thread test now passes every time.</div></div>
-
-<h3 class="group">Testing and process</h3>
-<div class="qa"><div class="q">How did you test it?</div><div class="a">A unit test on the textbook trace, a core test with 4 threads and a remount, a real mounted test under every policy including background mode, ThreadSanitizer, and a benchmark. 25 test cases, all passing.</div></div>
-<div class="qa"><div class="q">What happens if the computer crashes while mounted?</div><div class="a">There is no journal, so the image could be left inconsistent; a clean unmount is required. Journaling and an <code>fsck</code> are future work.</div></div>
-<div class="qa"><div class="q">What would you do with more time?</div><div class="a">A journal, double-indirect blocks, C-SCAN and LOOK, a block cache, and auto-tuning α and β so Adaptive helps on every workload.</div></div>
+<div class="qa"><div class="q">How do you prevent deadlock?</div><div class="a">One global lock order, from <code>ns_lock</code> down to the per-request mutex; a lock later in the order is never held while an earlier one is requested. The dispatcher takes only the queue mutex and a request's own mutex, so a thread waiting for its I/O while holding file locks cannot block it.</div></div>
+<div class="qa"><div class="q">What was the unlink bug?</div><div class="a"><code>unlink</code> freed a file's blocks and inode without the inode lock that readers and writers hold. A reader that had already looked up the name could then read blocks of a different file that reused them. Now lookups hold the namespace lock until they hold the inode lock, and unlink frees only under the inode's write lock.</div></div>
+<div class="qa"><div class="q">Does a clean ThreadSanitizer run prove there are no races?</div><div class="a">No. It only sees the interleavings that happened. That is why we also have targeted regression tests that fail on the old code. TSan was clean in repeated runs; one early run failed once with a message we did not capture.</div></div>
 
 <!-- ======================= 17 ======================= -->
 <h2><span class="n">17</span>Glossary</h2>
@@ -595,20 +632,24 @@
     <tr><td>Bitmap</td><td>One bit per block: used or free.</td></tr>
     <tr><td>Inode</td><td>A 128-byte record describing one file or folder and where its blocks are.</td></tr>
     <tr><td>Indexed allocation</td><td>Keeping a list of a file's block numbers in its inode (direct and indirect).</td></tr>
-    <tr><td>Seek distance</td><td>How many blocks the head moves between two requests.</td></tr>
+    <tr><td>Movement</td><td>How many blocks the modeled head moves between two requests; a model, not a measurement.</td></tr>
+    <tr><td>LOOK</td><td>Like SCAN, but the head turns at the last request instead of the disk edge.</td></tr>
+    <tr><td>Deadline</td><td>The time by which a request should start: arrival + 0 ms (read) or + 2 ms (write). After it, the request is overdue.</td></tr>
     <tr><td>Starvation</td><td>A request that keeps getting skipped and waits indefinitely.</td></tr>
-    <tr><td>Ageing</td><td>Raising a request's priority the longer it waits.</td></tr>
+    <tr><td>p99</td><td>The 99th percentile: 99% of operations were faster than this; it describes the slow tail.</td></tr>
+    <tr><td>O_DIRECT</td><td>An open flag that bypasses the host page cache, so each read or write reaches the device.</td></tr>
+    <tr><td>Modeled service time</td><td>An added hold of 100 µs + 0.25 µs per block moved, standing in for a disk where position matters.</td></tr>
+    <tr><td>Simulation</td><td>Running the real scheduler on given arrivals with a simulated clock; repeatable, but not a measurement.</td></tr>
     <tr><td>Mutex</td><td>A lock only one thread can hold at a time.</td></tr>
     <tr><td>Condition variable</td><td>A way for a thread to sleep until another signals that something changed.</td></tr>
     <tr><td>Reader-writer lock</td><td>A lock many readers can share but a writer must hold alone.</td></tr>
     <tr><td>Bounded buffer</td><td>A fixed-size queue shared by producers and consumers.</td></tr>
     <tr><td>Deadlock</td><td>Threads each waiting for a lock another holds, so none can move.</td></tr>
-    <tr><td>Daemon</td><td>A program that keeps running in the background.</td></tr>
     <tr><td>Data race</td><td>Two threads touching the same memory without a lock, at least one writing.</td></tr>
     <tr><td>Regression test</td><td>A test that stops a fixed bug from coming back.</td></tr>
   </tbody>
 </table>
-<p class="closing">Facts in this guide match the SchedFS repository (Sharmaditya2k05/FUSE) and the project report at commit b23f163. Good luck in the viva.</p>
+<p class="closing">Facts match the feature/deadline-scheduler branch of the SchedFS repository (Sharmaditya2k05/FUSE) and the project report on that branch. Good luck in the viva.</p>
 
 </div>
 </body>

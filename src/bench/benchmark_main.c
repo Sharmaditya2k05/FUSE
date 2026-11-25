@@ -1,116 +1,126 @@
 /*
  * benchmark_main.c
  *
- * schedfs-bench: replays fixed block traces under every policy and writes benchmark.csv.
+ * schedfs-bench: deterministic scheduler SIMULATION (no file system, no real disk).
+ *
+ * Replays block traces through the real scheduler_pick()/scheduler_advance() with a
+ * simulated clock (src/sched/sim.c) and writes benchmark.csv. Service time is MODELED
+ * (base + per-block x movement), so waiting times and throughput here are properties
+ * of the model, not measurements. Use scripts/run_mounted.sh for measurements of the
+ * mounted file system.
+ *
+ * Scenarios
+ *   static   sequential, random, clustered, mixed, interleaved: fixed lists that are
+ *            all pending at time 0 (head at 53 moving toward 0). "interleaved" was
+ *            called "concurrent" before; it is a fixed interleaving of near and far
+ *            blocks, not a live concurrent workload.
+ *   dynamic  stream_far: a saturated nearby stream (one request per 100 us, constant
+ *            100 us service, so every policy carries the same load) plus a distant read
+ *            every 20 ms. Shows starvation and the deadline policy's bound.
+ *            two_regions: two sequential streams in distant regions plus periodic small
+ *            reads near the start, with movement-dependent service time; shows the
+ *            movement saved by locality and the waiting time it costs.
  */
 #include "scheduler.h"
-#include <math.h>
+#include "sim.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
-#ifdef _WIN32
-#include <windows.h>
-#endif
 
-typedef struct {
-    const char *name;
-    const uint32_t *blocks;
-    size_t count;
-} workload_t;
+#define US 1000ULL
 
 static const uint32_t seq[] = {10, 11, 12, 13, 14, 15, 16, 17};
 static const uint32_t random_w[] = {145, 12, 98, 176, 32, 67, 4};
 static const uint32_t clustered[] = {90, 93, 96, 101, 104, 108, 111};
 static const uint32_t mixed[] = {10, 11, 12, 145, 13, 14, 67, 15, 16, 176, 17};
-static const uint32_t concurrent_w[] = {300,  12, 900, 13, 1500, 14, 2200, 15,
-                                        3010, 16, 44,  17, 1888, 18, 4000, 19};
+static const uint32_t interleaved[] = {300,  12, 900, 13, 1500, 14, 2200, 15,
+                                       3010, 16, 44,  17, 1888, 18, 4000, 19};
 
-static double ms(struct timespec a, struct timespec b) {
-    return (double)(b.tv_sec - a.tv_sec) * 1000.0 + (double)(b.tv_nsec - a.tv_nsec) / 1e6;
+typedef struct {
+    const char *name, *kind;
+    sim_arrival_t *a;
+    size_t n;
+    sim_model_t model;
+    int *probe; /* requests whose waits are reported separately (may be NULL) */
+    uint32_t head;
+    int direction;
+} scenario_t;
+
+static sim_arrival_t *static_trace(const uint32_t *b, size_t n) {
+    sim_arrival_t *a = calloc(n, sizeof(*a));
+    for (size_t i = 0; i < n && a; ++i)
+        a[i] = (sim_arrival_t){0, b[i], RQ_READ};
+    return a;
 }
 
-static void now_time(struct timespec *t) {
-#ifdef _WIN32
-    FILETIME ft;
-    ULARGE_INTEGER u;
-    GetSystemTimeAsFileTime(&ft);
-    u.LowPart = ft.dwLowDateTime;
-    u.HighPart = ft.dwHighDateTime;
-    uint64_t ns = (u.QuadPart - 116444736000000000ULL) * 100ULL;
-    t->tv_sec = (time_t)(ns / 1000000000ULL);
-    t->tv_nsec = (long)(ns % 1000000000ULL);
-#else
-    clock_gettime(CLOCK_MONOTONIC, t);
-#endif
-}
-
-static void seek_delay(uint64_t blocks) {
-    struct timespec start, current;
-    now_time(&start);
-    double target_ms = .010 + (double)blocks * .002;
-    do {
-        now_time(&current);
-    } while (ms(start, current) < target_ms);
-}
-
-static void run(FILE *out, const workload_t *w, sched_policy_t p) {
-    disk_request_t req[64];
-    disk_request_t *pending[64];
-    struct timespec base, now;
-    now_time(&base);
-    for (size_t i = 0; i < w->count; ++i) {
-        memset(&req[i], 0, sizeof(req[i]));
-        req[i].id = i + 1;
-        req[i].block = w->blocks[i];
-        req[i].arrival = base;
-        req[i].arrival.tv_nsec += (long)i * 1000L;
-        while (req[i].arrival.tv_nsec >= 1000000000L) {
-            req[i].arrival.tv_sec++;
-            req[i].arrival.tv_nsec -= 1000000000L;
+static size_t stream_far(sim_arrival_t **out, int **probe) {
+    enum { N = 4000 };
+    sim_arrival_t *a = calloc(N, sizeof(*a));
+    int *p = calloc(N, sizeof(*p));
+    size_t n = 0;
+    for (int i = 0; n < N; ++i) {
+        uint64_t t = (uint64_t)i * 100 * US;
+        if (i % 200 == 50) {
+            p[n] = 1;
+            a[n++] = (sim_arrival_t){t, 100u + (uint32_t)(i / 200) * 7u, RQ_READ};
         }
-        pending[i] = &req[i];
+        if (n < N)
+            a[n++] = (sim_arrival_t){t, 2000u + (uint32_t)(i % 64), RQ_WRITE};
     }
-    scheduler_t s = {p, 4096, 53, -1, .7, .3};
-    uint64_t seek = 0;
-    double sum = 0, max = 0, sq = 0;
-    size_t n = w->count;
-    now_time(&now);
-    while (n) {
-        size_t k = scheduler_pick(&s, pending, n, now);
-        uint32_t next = pending[k]->block;
-        uint64_t move = s.head > next ? s.head - next : next - s.head;
-        if (p == SCHED_SCAN && s.scan_direction < 0 && next > s.head) {
-            move = (uint64_t)s.head + next;
-            s.scan_direction = 1;
-        } else if (p == SCHED_SCAN && s.scan_direction > 0 && next < s.head) {
-            move = (uint64_t)(4095 - s.head) + (4095 - next);
-            s.scan_direction = -1;
+    *out = a;
+    *probe = p;
+    return n;
+}
+
+static size_t two_regions(sim_arrival_t **out, int **probe) {
+    enum { N = 6000 };
+    sim_arrival_t *a = calloc(N, sizeof(*a));
+    int *p = calloc(N, sizeof(*p));
+    size_t n = 0;
+    for (int i = 0; n < N; ++i) {
+        /* one write to each stream every 2.4 ms: FCFS runs at about 87% utilisation */
+        uint64_t t = (uint64_t)i * 2400 * US;
+        if (i % 10 == 7 && n < N) { /* a small read near the start every 24 ms */
+            p[n] = 1;
+            a[n++] = (sim_arrival_t){t, 20u + (uint32_t)(i % 16), RQ_READ};
         }
-        seek += move;
-        s.head = next;
-        double wait = ms(pending[k]->arrival, now);
-        if (wait < 0)
-            wait = 0;
-        sum += wait;
-        sq += wait * wait;
-        if (wait > max)
-            max = wait;
-        memmove(&pending[k], &pending[k + 1], (n - k - 1) * sizeof(*pending));
-        n--;
-        seek_delay(move);
-        now_time(&now);
+        if (n < N)
+            a[n++] = (sim_arrival_t){t, 1000u + (uint32_t)(i % 1000), RQ_WRITE};
+        if (n < N)
+            a[n++] = (sim_arrival_t){t + 1200 * US, 3000u + (uint32_t)(i % 1000), RQ_WRITE};
     }
-    double elapsed = ms(base, now);
-    if (elapsed <= 0)
-        elapsed = .001;
-    double count = (double)w->count;
-    double avg = sum / count, var = sq / count - avg * avg;
-    if (var < 0)
-        var = 0;
-    fprintf(out, "%s,%s,%lu,%.3f,%.6f,%.6f,%.6f,%lu,%.6f,%.3f\n", w->name, scheduler_name(p),
-            (unsigned long)seek, (double)seek / count, avg, max, sqrt(var), (unsigned long)w->count,
-            elapsed, count / (elapsed / 1000.0));
+    *out = a;
+    *probe = p;
+    return n;
+}
+
+static void run(FILE *out, const scenario_t *sc, sched_policy_t p) {
+    scheduler_t s;
+    scheduler_init(&s, p, 4096);
+    s.head = sc->head;
+    s.scan_direction = sc->direction;
+    double *wait = calloc(sc->n, sizeof(*wait));
+    sim_result_t r;
+    if (!wait || sim_run(&s, sc->a, sc->n, &sc->model, NULL, wait, &r)) {
+        fprintf(stderr, "out of memory\n");
+        exit(1);
+    }
+    double probe_max = 0, probe_sum = 0;
+    size_t probes = 0;
+    for (size_t i = 0; sc->probe && i < sc->n; ++i)
+        if (sc->probe[i]) {
+            probes++;
+            probe_sum += wait[i];
+            if (wait[i] > probe_max)
+                probe_max = wait[i];
+        }
+    double elapsed = (double)r.makespan_ns / 1e6;
+    fprintf(out, "%s,%s,%s,%llu,%.3f,%.6f,%.6f,%.6f,%zu,%.6f,%.3f,%zu,%.6f,%.6f\n", sc->name,
+            sc->kind, scheduler_name(p), (unsigned long long)r.movement,
+            (double)r.movement / (double)sc->n, r.wait_mean_ms, r.wait_max_ms, r.wait_stddev_ms,
+            r.served, elapsed, elapsed > 0 ? (double)r.served / (elapsed / 1000.0) : 0.0, probes,
+            probes ? probe_sum / (double)probes : 0.0, probe_max);
+    free(wait);
 }
 
 int main(int argc, char **argv) {
@@ -118,25 +128,35 @@ int main(int argc, char **argv) {
         fprintf(stderr, "Usage: %s --all\n", argv[0]);
         return 2;
     }
-    workload_t ws[] = {
-        {"sequential", seq, sizeof(seq) / sizeof(seq[0])},
-        {"random", random_w, sizeof(random_w) / sizeof(random_w[0])},
-        {"clustered", clustered, sizeof(clustered) / sizeof(clustered[0])},
-        {"mixed", mixed, sizeof(mixed) / sizeof(mixed[0])},
-        {"concurrent", concurrent_w, sizeof(concurrent_w) / sizeof(concurrent_w[0])}};
+    sim_model_t trace_model = {10, 2, 0}; /* 10 us + 2 us per block moved */
+    scenario_t sc[7] = {
+        {"sequential", "static", static_trace(seq, 8), 8, trace_model, NULL, 53, -1},
+        {"random", "static", static_trace(random_w, 7), 7, trace_model, NULL, 53, -1},
+        {"clustered", "static", static_trace(clustered, 7), 7, trace_model, NULL, 53, -1},
+        {"mixed", "static", static_trace(mixed, 11), 11, trace_model, NULL, 53, -1},
+        {"interleaved", "static", static_trace(interleaved, 16), 16, trace_model, NULL, 53, -1},
+        {"stream_far", "dynamic", NULL, 0, {100, 0, 128}, NULL, 2000, 1},
+        {"two_regions", "dynamic", NULL, 0, {50, 0.5, 128}, NULL, 1000, 1},
+    };
+    sc[5].n = stream_far(&sc[5].a, &sc[5].probe);
+    sc[6].n = two_regions(&sc[6].a, &sc[6].probe);
     FILE *f = fopen("benchmark.csv", "w");
     if (!f) {
         perror("benchmark.csv");
         return 1;
     }
-    fputs("workload,policy,total_seek,average_seek,average_wait_ms,maximum_wait_ms,"
-          "wait_stddev_ms,total_requests,elapsed_ms,throughput_rps\n",
+    fputs("workload,kind,policy,total_seek,average_seek,average_wait_ms,maximum_wait_ms,"
+          "wait_stddev_ms,total_requests,elapsed_ms,throughput_rps,probe_requests,"
+          "probe_mean_wait_ms,probe_max_wait_ms\n",
           f);
-    for (size_t i = 0; i < sizeof(ws) / sizeof(ws[0]); ++i)
-        for (int p = SCHED_FCFS; p <= SCHED_ADAPTIVE; ++p)
-            run(f, &ws[i], (sched_policy_t)p);
+    for (size_t i = 0; i < 7; ++i) {
+        for (int p = 0; p < SCHED_POLICY_COUNT; ++p)
+            run(f, &sc[i], (sched_policy_t)p);
+        free(sc[i].a);
+        free(sc[i].probe);
+    }
     fclose(f);
-    puts("Wrote benchmark.csv (measured scheduler replay; no artificial results).\n"
-         "Use scripts/plot_results.py to generate graphs.");
+    puts("Wrote benchmark.csv: deterministic SIMULATION with a modeled service time\n"
+         "(not a measurement of the file system or of a disk). See docs/evaluation.md.");
     return 0;
 }

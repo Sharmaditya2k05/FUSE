@@ -1,0 +1,4 @@
+pid,role,worker
+30,bg,0
+31,bg,1
+32,fg,0

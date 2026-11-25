@@ -1,0 +1,3 @@
+{"schedfs_options": "--sched=sstf --direct-io", "workload_options": "--warmup 1 --fg-interval-ms 20 --fg-file-kb 64 --fg-io-kb 4 --bg-file-kb 2048 --bg-chunk-kb 128 --duration 10.0 --bg 2 --fg-op update --seed 1003", "image_size": "64M",
+ "kernel": "6.18.58.1-microsoft-standard-WSL2", "cpus": 20, "date": "2026-11-25T16:02:55Z",
+ "commit": "unknown"}

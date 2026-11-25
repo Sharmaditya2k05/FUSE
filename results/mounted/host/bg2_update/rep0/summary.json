@@ -1,0 +1,28 @@
+{
+ "dir": "results/mounted/host/bg2_update/rep0",
+ "workload": {
+  "dir": "/var/tmp/tmpd6exum0h",
+  "duration_s": 10.0,
+  "warmup_s": 1.0,
+  "bg": 2,
+  "bg_file_kb": 2048,
+  "bg_chunk_kb": 128,
+  "fg_interval_ms": 20.0,
+  "fg_file_kb": 64,
+  "fg_io_kb": 4,
+  "fg_op": "update",
+  "bg_mode": "write",
+  "seed": 1001,
+  "t0_monotonic_ns": 8289881251865
+ },
+ "fg_latency_ms": {
+  "n": 500,
+  "mean": 0.035481146000000005,
+  "p50": 0.016388,
+  "p95": 0.035812,
+  "p99": 0.059122,
+  "max": 8.32088
+ },
+ "fg_errors": 0,
+ "bg_mb_per_s": 1062.0502016
+}

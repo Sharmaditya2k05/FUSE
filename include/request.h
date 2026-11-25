@@ -30,6 +30,11 @@ typedef struct disk_request {
     uint32_t block;
     void *buffer;
     struct timespec arrival, service_start, completion;
+    /* Measurement only (never used for scheduling): the process that issued the
+     * file operation (FUSE caller pid, 0 inside the daemon) and the number of
+     * requests that were pending when the scheduler picked this one. */
+    uint32_t client;
+    uint32_t queue_depth;
     pthread_t producer;
     pthread_mutex_t mutex;
     pthread_cond_t completed_cv;
@@ -37,6 +42,9 @@ typedef struct disk_request {
     ssize_t result;
     int error;
 } disk_request_t;
+
+/* Caller identity recorded in new requests; set per thread by the FUSE adapter. */
+extern _Thread_local uint32_t sfs_request_client;
 
 int request_init(disk_request_t *r, rq_op_t op, uint32_t block, void *buffer);
 void request_destroy(disk_request_t *r);

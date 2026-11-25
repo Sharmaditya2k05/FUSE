@@ -12,3 +12,7 @@ tests/core.img
 tmp/
 scripts/__pycache__/
 build-win/
+schedfs-workload
+tests/test_regress
+tests/*_tsan
+tests/*.img

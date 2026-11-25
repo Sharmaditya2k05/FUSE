@@ -1,0 +1,4 @@
+2026-11-25T15:36:51.813 [INFO] mounted image: 16384 blocks, scheduler=deadline
+2026-11-25T15:36:51.816 [INFO] unmounted image: 3 requests, total seek 3 blocks, mean wait 0.046 ms, max wait 0.085 ms, max queue depth 1
+2026-11-25T15:36:51.820 [INFO] mounted image: 16384 blocks, scheduler=deadline
+2026-11-25T15:37:02.741 [INFO] unmounted image: 92103 requests, total seek 39654609 blocks, mean wait 0.100 ms, max wait 5.489 ms, max queue depth 3

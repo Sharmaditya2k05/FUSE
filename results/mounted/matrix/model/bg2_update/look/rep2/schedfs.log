@@ -1,0 +1,4 @@
+2026-11-25T16:27:47.853 [INFO] mounted image: 16384 blocks, scheduler=look
+2026-11-25T16:27:47.855 [INFO] unmounted image: 3 requests, total seek 3 blocks, mean wait 0.015 ms, max wait 0.021 ms, max queue depth 1
+2026-11-25T16:27:47.857 [INFO] mounted image: 16384 blocks, scheduler=look
+2026-11-25T16:28:00.486 [INFO] unmounted image: 41902 requests, total seek 17132123 blocks, mean wait 0.412 ms, max wait 2.639 ms, max queue depth 3
